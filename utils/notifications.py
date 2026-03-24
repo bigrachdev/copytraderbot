@@ -3,27 +3,73 @@ Smart notifications system - alerts users on profits and suggests selling
 """
 import logging
 import asyncio
+import uuid
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta
 from data.database import db
 from chains.solana.spl_tokens import token_manager
 from chains.solana.dex_swaps import swapper
+from config import (
+    NOTIFICATION_CHECK_INTERVAL,
+    NOTIFICATION_PROFIT_MILESTONES,
+    NOTIFICATION_CUTLOSS_THRESHOLD,
+    NOTIFICATION_AGING_HOURS,
+    NOTIFICATION_AGING_MIN_ROI,
+)
 
 logger = logging.getLogger(__name__)
 
 
 class SmartNotificationEngine:
     """Send smart profit alerts and sell suggestions"""
-    
+
     def __init__(self):
-        self.profit_thresholds = [10, 25, 50, 100, 250, 500]  # % gains
-        self.check_interval = 60  # Check every minute
+        self.profit_thresholds = NOTIFICATION_PROFIT_MILESTONES
+        self.check_interval = NOTIFICATION_CHECK_INTERVAL
         self.active_positions = {}  # Track monitored positions
+        self._send_callback = None        # async (user_id, text) -> None
+        self._trade_opened_callback = None  # async (user_id, pos_id, text) -> None
+
+    def set_send_callback(self, callback):
+        """Register the async callback used to send plain Telegram messages.
+        Signature: async (user_id: int, message: str) -> None
+        """
+        self._send_callback = callback
+
+    def set_trade_opened_callback(self, callback):
+        """Register the callback for rich trade-opened notifications (with sell buttons).
+        Signature: async (user_id: int, position_id: str, text: str) -> None
+        """
+        self._trade_opened_callback = callback
+
+    async def notify_user(self, user_id: int, message: str):
+        """Send a plain text notification to a user via the registered Telegram callback."""
+        if self._send_callback is None:
+            logger.warning(f"notify_user called but no send callback registered (user {user_id})")
+            return
+        try:
+            await self._send_callback(user_id, message)
+        except Exception as e:
+            logger.error(f"Error sending notification to user {user_id}: {e}")
+
+    async def notify_trade_opened(self, user_id: int, position_id: str, message: str):
+        """Send a trade-opened notification with inline sell/view buttons.
+        Falls back to plain text if the rich callback is not registered."""
+        if self._trade_opened_callback:
+            try:
+                await self._trade_opened_callback(user_id, position_id, message)
+                return
+            except Exception as e:
+                logger.error(f"notify_trade_opened callback failed for {user_id}: {e}")
+        # fallback
+        await self.notify_user(user_id, message)
     
-    def track_position(self, user_id: int, token_address: str, 
+    def track_position(self, user_id: int, token_address: str,
                       amount_bought: float, entry_price: float,
-                      dex: str) -> Dict:
-        """Start tracking a position"""
+                      dex: str, position_type: str = 'smart',
+                      db_position_id: int = None) -> str:
+        """Start tracking a position. Returns position_id (short key safe for Telegram callbacks)."""
+        position_id = uuid.uuid4().hex[:10]  # 10-char hex — fits well within 64-byte callback limit
         position = {
             'user_id': user_id,
             'token_address': token_address,
@@ -35,14 +81,13 @@ class SmartNotificationEngine:
             'roi': 0,
             'profit': 0,
             'alerts_sent': set(),
-            'active': True
+            'active': True,
+            'position_type': position_type,   # 'smart' | 'copy'
+            'db_position_id': db_position_id, # copy_performance row id (copy trades only)
         }
-        
-        position_id = f"{user_id}_{token_address}_{datetime.now().timestamp()}"
         self.active_positions[position_id] = position
-        
-        logger.info(f"📍 Position tracked: {position_id}")
-        return position
+        logger.info(f"📍 Position tracked: {position_id} ({token_address[:8]}… {position_type})")
+        return position_id
     
     def calculate_roi(self, current_price: float, entry_price: float) -> float:
         """Calculate ROI %"""
@@ -102,7 +147,7 @@ class SmartNotificationEngine:
                         logger.info(f"🎉 Profit alert: {roi:.1f}% ROI")
                 
                 # Check for losses (suggest cut losses)
-                if roi <= -50 and 'cutloss' not in position['alerts_sent']:
+                if roi <= NOTIFICATION_CUTLOSS_THRESHOLD and 'cutloss' not in position['alerts_sent']:
                     alerts.append({
                         'type': 'cutloss_suggestion',
                         'position_id': position_id,
@@ -117,7 +162,7 @@ class SmartNotificationEngine:
                 
                 # Check for time-based holding (over 24h in profit)
                 time_held = datetime.now() - position['entry_time']
-                if time_held > timedelta(hours=24) and roi > 20 and 'aging' not in position['alerts_sent']:
+                if time_held > timedelta(hours=NOTIFICATION_AGING_HOURS) and roi > NOTIFICATION_AGING_MIN_ROI and 'aging' not in position['alerts_sent']:
                     alerts.append({
                         'type': 'aging_position',
                         'position_id': position_id,
@@ -162,32 +207,29 @@ class SmartNotificationEngine:
             return True
         return False
     
+    async def check_once(self, telegram_send_callback):
+        """Run a single check pass and send any alerts. Called by the job queue."""
+        try:
+            alerts = await self.check_positions()
+
+            alerts_by_user = {}
+            for alert in alerts:
+                user_id = alert['user_id']
+                alerts_by_user.setdefault(user_id, []).append(alert)
+
+            for user_id, user_alerts in alerts_by_user.items():
+                for alert in user_alerts:
+                    await telegram_send_callback(user_id, alert)
+
+        except Exception as e:
+            logger.error(f"Error in notification check: {e}")
+
     async def monitor_all_users(self, telegram_send_callback):
-        """Continuously monitor all active positions"""
+        """Continuously monitor all active positions (standalone mode)."""
         logger.info("🎯 Smart notification engine started")
-        
         while True:
-            try:
-                alerts = await self.check_positions()
-                
-                # Group alerts by user
-                alerts_by_user = {}
-                for alert in alerts:
-                    user_id = alert['user_id']
-                    if user_id not in alerts_by_user:
-                        alerts_by_user[user_id] = []
-                    alerts_by_user[user_id].append(alert)
-                
-                # Send alerts via Telegram
-                for user_id, user_alerts in alerts_by_user.items():
-                    for alert in user_alerts:
-                        await telegram_send_callback(user_id, alert)
-                
-                await asyncio.sleep(self.check_interval)
-            
-            except Exception as e:
-                logger.error(f"Error in monitoring loop: {e}")
-                await asyncio.sleep(self.check_interval)
+            await self.check_once(telegram_send_callback)
+            await asyncio.sleep(self.check_interval)
 
 
 notification_engine = SmartNotificationEngine()

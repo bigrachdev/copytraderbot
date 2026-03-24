@@ -4,15 +4,16 @@ MEV (Miner Extractable Value) protection for Solana
 import logging
 from typing import Dict, Optional, List
 import aiohttp
+from config import JITO_API_URL, TX_SUBMIT_TIMEOUT
 
 logger = logging.getLogger(__name__)
 
 
 class MEVProtection:
     """Protect against MEV and sandwich attacks"""
-    
+
     def __init__(self):
-        self.jito_bundle_api = "https://api.jito.wtf/api/v1"
+        self.jito_bundle_api = JITO_API_URL
     
     async def use_private_pool(self, transaction: str) -> Optional[str]:
         """Submit transaction to private pool to avoid MEV"""
@@ -26,7 +27,7 @@ class MEVProtection:
                     "skipPreFlightValidation": False
                 }
                 
-                async with session.post(url, json=payload, timeout=10) as response:
+                async with session.post(url, json=payload, timeout=TX_SUBMIT_TIMEOUT) as response:
                     if response.status == 200:
                         data = await response.json()
                         logger.info("✅ Transaction submitted to private pool")
@@ -81,7 +82,7 @@ class MEVProtection:
                     "params": [transactions]
                 }
                 
-                async with session.post(url, json=payload, timeout=10) as response:
+                async with session.post(url, json=payload, timeout=TX_SUBMIT_TIMEOUT) as response:
                     if response.status == 200:
                         data = await response.json()
                         logger.info("✅ Bundle submitted to Jito")

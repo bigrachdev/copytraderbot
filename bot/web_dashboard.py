@@ -1,6 +1,11 @@
 """
 Web dashboard API for the DEX copy trading bot
 """
+import sys
+import os
+# Ensure project root is on sys.path when this file is run as a subprocess
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import logging
 from flask import Flask, render_template, request, jsonify, session
 from flask_cors import CORS
@@ -16,7 +21,7 @@ from chains.solana.spl_tokens import token_manager
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'your-secret-key-change-in-production'
+app.config['SECRET_KEY'] = os.getenv('FLASK_SECRET_KEY') or os.urandom(32)
 CORS(app)
 Session(app)
 
@@ -144,17 +149,16 @@ def generate_vanity():
         return jsonify({'error': 'Prefix required'}), 400
     
     try:
-        loop = asyncio.new_event_loop()
-        public_key, secret_key, diff = loop.run_until_complete(
+        public_key, secret_key, diff = asyncio.run(
             vanity_generator.generate_vanity_wallet(prefix, difficulty)
         )
-        
+
         return jsonify({
             'address': public_key,
             'private_key': secret_key,
             'difficulty': diff
         })
-    
+
     except Exception as e:
         logger.error(f"Vanity wallet generation error: {e}")
         return jsonify({'error': str(e)}), 500
@@ -170,8 +174,7 @@ def get_wallet_tokens(wallet_address):
     if not wallet_manager.validate_address(wallet_address):
         return jsonify({'error': 'Invalid wallet address'}), 400
     
-    loop = asyncio.new_event_loop()
-    tokens = loop.run_until_complete(token_manager.get_all_token_balances(wallet_address))
+    tokens = asyncio.run(token_manager.get_all_token_balances(wallet_address))
     
     return jsonify({'tokens': tokens})
 

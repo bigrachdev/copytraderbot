@@ -18,7 +18,7 @@ class Database:
     
     def get_connection(self):
         """Get database connection"""
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         return conn
     
@@ -41,6 +41,8 @@ class Database:
                 trading_wallet_address TEXT,
                 encrypted_trading_key TEXT,
                 use_separate_trading_wallet BOOLEAN DEFAULT 0,
+                base_wallet_address TEXT,
+                encrypted_base_key TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
@@ -53,6 +55,7 @@ class Database:
                 user_id INTEGER NOT NULL,
                 wallet_address TEXT NOT NULL,
                 alias TEXT,
+                chain TEXT DEFAULT 'solana',
                 copy_scale REAL DEFAULT 1.0,
                 copy_delay_seconds INTEGER DEFAULT 0,
                 max_loss_percent REAL DEFAULT 20.0,
@@ -65,6 +68,25 @@ class Database:
             )
         ''')
 
+        # Migrate existing users rows that lack new columns
+        for col, definition in [
+            ('base_wallet_address',    'TEXT'),
+            ('encrypted_base_key',     'TEXT'),
+            ('stop_loss_percent',      'REAL DEFAULT 0'),
+            ('take_profit_percent',    'REAL DEFAULT 0'),
+            ('trailing_stop_percent',  'REAL DEFAULT 0'),
+            ('is_admin',               'BOOLEAN DEFAULT 0'),
+            ('is_active',              'BOOLEAN DEFAULT 1'),
+            ('trade_percent',          'REAL DEFAULT 20.0'),
+            ('trading_wallet_address', 'TEXT'),
+            ('encrypted_trading_key',  'TEXT'),
+            ('use_separate_trading_wallet', 'BOOLEAN DEFAULT 0'),
+        ]:
+            try:
+                cursor.execute(f'ALTER TABLE users ADD COLUMN {col} {definition}')
+            except Exception:
+                pass  # column already exists
+
         # Migrate existing watched_wallets rows that lack new columns
         for col, definition in [
             ('copy_delay_seconds', 'INTEGER DEFAULT 0'),
@@ -72,6 +94,7 @@ class Database:
             ('weight', 'REAL DEFAULT 1.0'),
             ('is_paused', 'BOOLEAN DEFAULT 0'),
             ('pause_reason', 'TEXT'),
+            ('chain', "TEXT DEFAULT 'solana'"),
         ]:
             try:
                 cursor.execute(f'ALTER TABLE watched_wallets ADD COLUMN {col} {definition}')
@@ -107,6 +130,7 @@ class Database:
                 id INTEGER PRIMARY KEY,
                 user_id INTEGER NOT NULL,
                 watched_wallet TEXT,
+                chain TEXT DEFAULT 'solana',
                 input_mint TEXT,
                 output_mint TEXT,
                 input_amount REAL,
@@ -121,6 +145,15 @@ class Database:
                 FOREIGN KEY(user_id) REFERENCES users(user_id)
             )
         ''')
+
+        # Migrate existing trades rows that lack new columns
+        for col, definition in [
+            ('chain', "TEXT DEFAULT 'solana'"),
+        ]:
+            try:
+                cursor.execute(f'ALTER TABLE trades ADD COLUMN {col} {definition}')
+            except Exception:
+                pass  # column already exists
         
         # Pending trades (for copy trading)
         cursor.execute('''
@@ -190,6 +223,67 @@ class Database:
             )
         ''')
         
+        # Multi-chain wallet storage (one row per user per chain)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS chain_wallets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                chain TEXT NOT NULL,
+                address TEXT NOT NULL,
+                encrypted_key TEXT,
+                is_active BOOLEAN DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, chain),
+                FOREIGN KEY(user_id) REFERENCES users(user_id)
+            )
+        ''')
+
+        # Auto-trade settings persistence
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS auto_trade_settings (
+                user_id INTEGER PRIMARY KEY,
+                is_active BOOLEAN DEFAULT 0,
+                trade_percent REAL DEFAULT 20.0,
+                max_trades_per_cycle INTEGER DEFAULT 2,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
+        # Auto-smart trade settings persistence
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS auto_smart_settings (
+                user_id INTEGER PRIMARY KEY,
+                is_active BOOLEAN DEFAULT 0,
+                trade_percent REAL DEFAULT 10.0,
+                max_positions INTEGER DEFAULT 4,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
+        # Per-user key-value settings store (smart trade preferences)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS user_settings (
+                user_id INTEGER NOT NULL,
+                setting_key TEXT NOT NULL,
+                setting_value TEXT NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (user_id, setting_key)
+            )
+        ''')
+
+        # Migrate copy_performance with new tracking columns
+        for col, definition in [
+            ('whale_block_time',  'INTEGER DEFAULT 0'),
+            ('copy_latency_ms',   'INTEGER DEFAULT 0'),
+            ('signal_count',      'INTEGER DEFAULT 1'),
+            ('exit_reason',       'TEXT'),
+            ('token_amount',      'REAL DEFAULT 0'),
+        ]:
+            try:
+                cursor.execute(f'ALTER TABLE copy_performance ADD COLUMN {col} {definition}')
+            except Exception:
+                pass  # column already exists
+
         conn.commit()
         conn.close()
         logger.info("✅ Database initialized")
@@ -236,16 +330,18 @@ class Database:
                            alias: str = None, copy_scale: float = 1.0,
                            copy_delay_seconds: int = 0,
                            max_loss_percent: float = 20.0,
-                           weight: float = 1.0) -> bool:
+                           weight: float = 1.0,
+                           chain: str = 'solana') -> bool:
         """Add watched wallet for copy trading"""
         try:
             conn = self.get_connection()
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO watched_wallets
-                (user_id, wallet_address, alias, copy_scale, copy_delay_seconds, max_loss_percent, weight)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (user_id, wallet_address, alias, copy_scale, copy_delay_seconds, max_loss_percent, weight))
+                (user_id, wallet_address, alias, copy_scale, copy_delay_seconds, max_loss_percent, weight, chain)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (user_id, wallet_address, alias, copy_scale, copy_delay_seconds,
+                  max_loss_percent, weight, chain))
             conn.commit()
             conn.close()
             return True
@@ -328,17 +424,18 @@ class Database:
     def add_trade(self, user_id: int, input_mint: str, output_mint: str,
                   input_amount: float, output_amount: float, dex: str,
                   price: float, slippage: float, tx_hash: str,
-                  watched_wallet: str = None, is_copy: bool = False) -> bool:
+                  watched_wallet: str = None, is_copy: bool = False,
+                  chain: str = 'solana') -> bool:
         """Record trade"""
         try:
             conn = self.get_connection()
             cursor = conn.cursor()
             cursor.execute('''
-                INSERT INTO trades 
-                (user_id, watched_wallet, input_mint, output_mint, input_amount, 
+                INSERT INTO trades
+                (user_id, watched_wallet, chain, input_mint, output_mint, input_amount,
                  output_amount, dex, price, slippage, is_copy, tx_hash, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (user_id, watched_wallet, input_mint, output_mint, input_amount,
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (user_id, watched_wallet, chain, input_mint, output_mint, input_amount,
                   output_amount, dex, price, slippage, is_copy, tx_hash, 'confirmed'))
             conn.commit()
             conn.close()
@@ -463,7 +560,7 @@ class Database:
             conn = self.get_connection()
             cursor = conn.cursor()
             cursor.execute('''
-                UPDATE users SET is_admin = ? WHERE user_id = ?
+                UPDATE users SET is_admin = ? WHERE telegram_id = ?
             ''', (1 if is_admin else 0, user_id))
             conn.commit()
             conn.close()
@@ -478,7 +575,7 @@ class Database:
         try:
             conn = self.get_connection()
             cursor = conn.cursor()
-            cursor.execute('SELECT is_admin FROM users WHERE user_id = ?', (user_id,))
+            cursor.execute('SELECT is_admin FROM users WHERE telegram_id = ?', (user_id,))
             result = cursor.fetchone()
             conn.close()
             return bool(result[0]) if result else False
@@ -534,7 +631,7 @@ class Database:
             cursor = conn.cursor()
             
             # Get main wallet address
-            cursor.execute('SELECT wallet_address FROM users WHERE user_id = ?', (user_id,))
+            cursor.execute('SELECT wallet_address FROM users WHERE telegram_id = ?', (user_id,))
             result = cursor.fetchone()
             total_balance = 0.0
             
@@ -661,7 +758,7 @@ class Database:
             conn = self.get_connection()
             cursor = conn.cursor()
             cursor.execute('''
-                UPDATE users SET trade_percent = ? WHERE user_id = ?
+                UPDATE users SET trade_percent = ? WHERE telegram_id = ?
             ''', (percent, user_id))
             conn.commit()
             conn.close()
@@ -671,6 +768,96 @@ class Database:
             logger.error(f"Error updating trade percent: {e}")
             return False
     
+    def update_user_setting(self, telegram_id: int, field: str, value) -> bool:
+        """Generic setter for a single column in the users table."""
+        # Whitelist allowed fields to prevent SQL injection
+        _ALLOWED = {
+            'stop_loss_percent', 'take_profit_percent', 'trade_percent',
+            'trailing_stop_percent', 'use_separate_trading_wallet',
+        }
+        if field not in _ALLOWED:
+            logger.warning(f"update_user_setting: field '{field}' not in whitelist")
+            return False
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                f'UPDATE users SET {field} = ? WHERE telegram_id = ?',
+                (value, telegram_id)
+            )
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            logger.error(f"update_user_setting error ({field}): {e}")
+            return False
+
+    # ── Per-user key-value settings (smart trade preferences) ─────────────────
+
+    def get_user_setting(self, user_id: int, key: str, default=None):
+        """Return a stored user setting (string), cast to float/int if numeric."""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT setting_value FROM user_settings WHERE user_id = ? AND setting_key = ?',
+                (user_id, key)
+            )
+            row = cursor.fetchone()
+            conn.close()
+            if row is None:
+                return default
+            val = row[0]
+            # Auto-cast to numeric types when possible
+            try:
+                return float(val) if '.' in val else int(val)
+            except (ValueError, TypeError):
+                return val
+        except Exception as e:
+            logger.error(f"get_user_setting error ({key}): {e}")
+            return default
+
+    def set_user_setting(self, user_id: int, key: str, value) -> bool:
+        """Persist a user setting. Value is stored as string."""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO user_settings (user_id, setting_key, setting_value, updated_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id, setting_key) DO UPDATE SET
+                    setting_value = excluded.setting_value,
+                    updated_at = CURRENT_TIMESTAMP
+            ''', (user_id, key, str(value)))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            logger.error(f"set_user_setting error ({key}): {e}")
+            return False
+
+    def get_all_user_settings(self, user_id: int) -> dict:
+        """Return all settings for a user as a dict."""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT setting_key, setting_value FROM user_settings WHERE user_id = ?',
+                (user_id,)
+            )
+            rows = cursor.fetchall()
+            conn.close()
+            result = {}
+            for key, val in rows:
+                try:
+                    result[key] = float(val) if '.' in val else int(val)
+                except (ValueError, TypeError):
+                    result[key] = val
+            return result
+        except Exception as e:
+            logger.error(f"get_all_user_settings error: {e}")
+            return {}
+
     def get_user_smart_trades(self, user_id: int, limit: int = 10) -> List[Dict]:
         """Get recent smart trades for user"""
         try:
@@ -700,7 +887,7 @@ class Database:
             cursor.execute('''
                 UPDATE users 
                 SET trading_wallet_address = ?, encrypted_trading_key = ?, use_separate_trading_wallet = ?
-                WHERE user_id = ?
+                WHERE telegram_id = ?
             ''', (wallet_address, encrypted_key, 1 if use_separate else 0, user_id))
             conn.commit()
             conn.close()
@@ -717,7 +904,7 @@ class Database:
             cursor = conn.cursor()
             cursor.execute('''
                 SELECT trading_wallet_address, use_separate_trading_wallet
-                FROM users WHERE user_id = ?
+                FROM users WHERE telegram_id = ?
             ''', (user_id,))
             result = cursor.fetchone()
             conn.close()
@@ -737,7 +924,7 @@ class Database:
             conn = self.get_connection()
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT use_separate_trading_wallet FROM users WHERE user_id = ?
+                SELECT use_separate_trading_wallet FROM users WHERE telegram_id = ?
             ''', (user_id,))
             result = cursor.fetchone()
             conn.close()
@@ -745,6 +932,130 @@ class Database:
         except Exception:
             return False
     
+    # Base wallet management
+
+    def set_base_wallet(self, user_id: int, wallet_address: str,
+                        encrypted_key: str = None) -> bool:
+        """Set or update Base (EVM) wallet for a user."""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE users
+                SET base_wallet_address = ?, encrypted_base_key = ?
+                WHERE telegram_id = ?
+            ''', (wallet_address, encrypted_key, user_id))
+            conn.commit()
+            conn.close()
+            logger.info(f"✅ Base wallet set for user {user_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Error setting Base wallet: {e}")
+            return False
+
+    def get_base_wallet(self, user_id: int) -> Optional[Dict]:
+        """Get Base wallet info for a user."""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT base_wallet_address, encrypted_base_key
+                FROM users WHERE telegram_id = ?
+            ''', (user_id,))
+            result = cursor.fetchone()
+            conn.close()
+            if result and result[0]:
+                return {
+                    'address': result[0],
+                    'encrypted_key': result[1],
+                }
+            return None
+        except Exception as e:
+            logger.error(f"Error getting Base wallet: {e}")
+            return None
+
+    # Chain wallet management (ETH, BSC, TON, etc.)
+
+    def set_chain_wallet(self, user_id: int, chain: str, address: str,
+                         encrypted_key: str = None) -> bool:
+        """Insert or update wallet for a given chain (uses internal user_id PK)."""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO chain_wallets (user_id, chain, address, encrypted_key)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(user_id, chain) DO UPDATE SET
+                    address = excluded.address,
+                    encrypted_key = excluded.encrypted_key,
+                    is_active = 1
+            ''', (user_id, chain, address, encrypted_key))
+            conn.commit()
+            conn.close()
+            logger.info(f"✅ Chain wallet set: user={user_id} chain={chain}")
+            return True
+        except Exception as e:
+            logger.error(f"Error setting chain wallet: {e}")
+            return False
+
+    def set_chain_wallet_by_telegram(self, telegram_id: int, chain: str, address: str,
+                                     encrypted_key: str = None) -> bool:
+        """Set chain wallet using telegram_id (resolves to internal user_id first)."""
+        try:
+            user = self.get_user(telegram_id)
+            if not user:
+                return False
+            return self.set_chain_wallet(user['user_id'], chain, address, encrypted_key)
+        except Exception as e:
+            logger.error(f"Error setting chain wallet by telegram: {e}")
+            return False
+
+    def get_chain_wallet(self, telegram_id: int, chain: str) -> Optional[Dict]:
+        """Get wallet for a specific chain by telegram_id."""
+        try:
+            user = self.get_user(telegram_id)
+            if not user:
+                return None
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT address, encrypted_key, created_at FROM chain_wallets
+                WHERE user_id = ? AND chain = ? AND is_active = 1
+            ''', (user['user_id'], chain))
+            row = cursor.fetchone()
+            conn.close()
+            if row:
+                return {'address': row[0], 'encrypted_key': row[1], 'created_at': row[2]}
+            return None
+        except Exception as e:
+            logger.error(f"Error getting chain wallet: {e}")
+            return None
+
+    def get_all_chain_wallets(self, telegram_id: int) -> Dict:
+        """Get all chain wallets for a user. Returns dict keyed by chain name."""
+        try:
+            user = self.get_user(telegram_id)
+            if not user:
+                return {}
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT chain, address, encrypted_key, created_at FROM chain_wallets
+                WHERE user_id = ? AND is_active = 1
+            ''', (user['user_id'],))
+            result = {}
+            for row in cursor.fetchall():
+                result[row[0]] = {
+                    'address': row[1],
+                    'encrypted_key': row[2],
+                    'created_at': row[3],
+                }
+            conn.close()
+            return result
+        except Exception as e:
+            logger.error(f"Error getting all chain wallets: {e}")
+            return {}
+
     def get_wallet_pair(self, user_id: int) -> Dict:
         """Get both main and trading wallet info"""
         try:
@@ -767,7 +1078,9 @@ class Database:
 
     def open_copy_position(self, user_id: int, watched_wallet: str, token_address: str,
                            whale_entry_price: float, user_entry_price: float,
-                           copy_scale: float, sol_spent: float) -> int:
+                           copy_scale: float, sol_spent: float,
+                           whale_block_time: int = 0, copy_latency_ms: int = 0,
+                           signal_count: int = 1) -> int:
         """Record opening of a copy trade position. Returns row id."""
         try:
             conn = self.get_connection()
@@ -775,10 +1088,12 @@ class Database:
             cursor.execute('''
                 INSERT INTO copy_performance
                 (user_id, watched_wallet, token_address, whale_entry_price,
-                 user_entry_price, copy_scale, sol_spent)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                 user_entry_price, copy_scale, sol_spent,
+                 whale_block_time, copy_latency_ms, signal_count)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (user_id, watched_wallet, token_address, whale_entry_price,
-                  user_entry_price, copy_scale, sol_spent))
+                  user_entry_price, copy_scale, sol_spent,
+                  whale_block_time, copy_latency_ms, signal_count))
             row_id = cursor.lastrowid
             conn.commit()
             conn.close()
@@ -787,8 +1102,24 @@ class Database:
             logger.error(f"Error opening copy position: {e}")
             return -1
 
+    def update_copy_position_token_amount(self, position_id: int, token_amount: float) -> bool:
+        """Update the token_amount field after a copy trade is confirmed."""
+        try:
+            conn = self.get_connection()
+            conn.execute(
+                'UPDATE copy_performance SET token_amount = ? WHERE id = ?',
+                (token_amount, position_id)
+            )
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            logger.error(f"Error updating copy position token amount: {e}")
+            return False
+
     def close_copy_position(self, position_id: int, whale_exit_price: float,
-                            user_exit_price: float, sol_received: float) -> bool:
+                            user_exit_price: float, sol_received: float,
+                            exit_reason: str = None) -> bool:
         """Record closing of a copy trade position with profit comparison."""
         try:
             conn = self.get_connection()
@@ -807,16 +1138,148 @@ class Database:
                 SET whale_exit_price = ?, whale_profit_percent = ?,
                     user_exit_price = ?, user_profit_percent = ?,
                     sol_received = ?, status = 'closed',
+                    exit_reason = ?,
                     closed_at = CURRENT_TIMESTAMP
                 WHERE id = ?
             ''', (whale_exit_price, whale_profit, user_exit_price, user_profit,
-                  sol_received, position_id))
+                  sol_received, exit_reason, position_id))
             conn.commit()
             conn.close()
             return True
         except Exception as e:
             logger.error(f"Error closing copy position: {e}")
             return False
+
+    def get_all_open_positions(self, user_id: int) -> Dict:
+        """
+        Return all open positions for a user:
+          - open copy trades (copy_performance where status='open')
+          - open smart trades (smart_trades where is_closed=0)
+        Returns dict with keys 'copy' and 'smart'.
+        """
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+
+            cursor.execute('''
+                SELECT token_address, watched_wallet, whale_entry_price,
+                       user_entry_price, copy_scale, sol_spent, opened_at,
+                       token_amount
+                FROM copy_performance
+                WHERE user_id = ? AND status = 'open'
+                ORDER BY opened_at DESC
+            ''', (user_id,))
+            copy_positions = [dict(r) for r in cursor.fetchall()]
+
+            cursor.execute('''
+                SELECT token_address, token_amount, sol_spent, entry_price,
+                       dex, entry_tx, created_at
+                FROM smart_trades
+                WHERE user_id = ? AND is_closed = 0
+                ORDER BY created_at DESC
+            ''', (user_id,))
+            smart_positions = [dict(r) for r in cursor.fetchall()]
+
+            conn.close()
+            return {'copy': copy_positions, 'smart': smart_positions}
+        except Exception as e:
+            logger.error(f"Error getting open positions: {e}")
+            return {'copy': [], 'smart': []}
+
+    # ── Auto-trade settings ───────────────────────────────────────────────────
+
+    def save_auto_trade_settings(self, user_id: int, is_active: bool,
+                                  trade_percent: float = 20.0,
+                                  max_trades_per_cycle: int = 2) -> None:
+        """Persist auto-trade settings for a user."""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO auto_trade_settings (user_id, is_active, trade_percent, max_trades_per_cycle, updated_at)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    is_active = excluded.is_active,
+                    trade_percent = excluded.trade_percent,
+                    max_trades_per_cycle = excluded.max_trades_per_cycle,
+                    updated_at = CURRENT_TIMESTAMP
+            ''', (user_id, int(is_active), trade_percent, max_trades_per_cycle))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.error(f"save_auto_trade_settings error: {e}")
+
+    def get_active_auto_traders(self) -> list:
+        """Return list of (user_id, trade_percent, max_trades_per_cycle) for all active auto-traders."""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT user_id, trade_percent, max_trades_per_cycle
+                FROM auto_trade_settings
+                WHERE is_active = 1
+            ''')
+            rows = [dict(r) for r in cursor.fetchall()]
+            conn.close()
+            return rows
+        except Exception as e:
+            logger.error(f"get_active_auto_traders error: {e}")
+            return []
+
+    def save_auto_smart_settings(self, user_id: int, is_active: bool,
+                                  trade_percent: float = 10.0,
+                                  max_positions: int = 4) -> None:
+        """Persist auto-smart trade settings for a user."""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO auto_smart_settings (user_id, is_active, trade_percent, max_positions, updated_at)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    is_active = excluded.is_active,
+                    trade_percent = excluded.trade_percent,
+                    max_positions = excluded.max_positions,
+                    updated_at = CURRENT_TIMESTAMP
+            ''', (user_id, int(is_active), trade_percent, max_positions))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.error(f"save_auto_smart_settings error: {e}")
+
+    def get_active_auto_smart_traders(self) -> list:
+        """Return all users who have auto-smart trading enabled."""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT user_id, trade_percent, max_positions
+                FROM auto_smart_settings
+                WHERE is_active = 1
+            ''')
+            rows = [dict(r) for r in cursor.fetchall()]
+            conn.close()
+            return rows
+        except Exception as e:
+            logger.error(f"get_active_auto_smart_traders error: {e}")
+            return []
+
+    def get_open_copy_position(self, user_id: int, token_address: str) -> Optional[Dict]:
+        """Get the most recent open copy position for a user+token."""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT * FROM copy_performance
+                WHERE user_id = ? AND token_address = ? AND status = 'open'
+                ORDER BY opened_at DESC LIMIT 1
+            ''', (user_id, token_address))
+            row = cursor.fetchone()
+            conn.close()
+            return dict(row) if row else None
+        except Exception as e:
+            logger.error(f"Error getting open copy position: {e}")
+            return None
 
     def get_copy_performance(self, user_id: int, watched_wallet: str = None,
                              limit: int = 20) -> List[Dict]:
@@ -843,6 +1306,66 @@ class Database:
             logger.error(f"Error getting copy performance: {e}")
             return []
 
+    def get_whale_rankings(self, user_id: int,
+                           min_trades: int = 3,
+                           lookback_days: int = 30) -> List[Dict]:
+        """
+        Rank all watched whales by performance over the last `lookback_days` days.
+        Only whales with at least `min_trades` closed copy trades are included.
+
+        Returns a list of dicts sorted by score (win_rate * avg_profit) descending:
+          {watched_wallet, chain, total_trades, winning_trades, win_rate,
+           avg_profit, score, is_paused}
+        """
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT
+                    cp.watched_wallet,
+                    ww.chain,
+                    ww.is_paused,
+                    COUNT(*)                                                  AS total_trades,
+                    SUM(CASE WHEN cp.whale_profit_percent > 0 THEN 1 ELSE 0 END) AS winning_trades,
+                    AVG(cp.whale_profit_percent)                              AS avg_profit
+                FROM copy_performance cp
+                LEFT JOIN watched_wallets ww
+                    ON ww.wallet_address = cp.watched_wallet
+                    AND ww.user_id = cp.user_id
+                WHERE cp.user_id = ?
+                  AND cp.status  = 'closed'
+                  AND cp.closed_at >= datetime('now', ? || ' days')
+                GROUP BY cp.watched_wallet
+                HAVING total_trades >= ?
+                ORDER BY avg_profit DESC
+            ''', (user_id, f'-{lookback_days}', min_trades))
+            rows = cursor.fetchall()
+            conn.close()
+
+            ranked = []
+            for r in rows:
+                total    = r['total_trades'] or 1
+                winning  = r['winning_trades'] or 0
+                win_rate = winning / total
+                avg_p    = r['avg_profit'] or 0.0
+                # Score = win_rate × avg_profit (positive only counts)
+                score    = win_rate * max(avg_p, 0)
+                ranked.append({
+                    'watched_wallet': r['watched_wallet'],
+                    'chain':          r['chain'] or 'solana',
+                    'is_paused':      bool(r['is_paused']),
+                    'total_trades':   total,
+                    'winning_trades': winning,
+                    'win_rate':       round(win_rate, 3),
+                    'avg_profit':     round(avg_p, 2),
+                    'score':          round(score, 4),
+                })
+            ranked.sort(key=lambda x: x['score'], reverse=True)
+            return ranked
+        except Exception as e:
+            logger.error(f"Error getting whale rankings: {e}")
+            return []
+
     def get_whale_recent_loss(self, user_id: int, watched_wallet: str,
                               last_n: int = 5) -> float:
         """Return average whale profit % over last N closed trades (negative = loss)."""
@@ -862,6 +1385,81 @@ class Database:
         except Exception as e:
             logger.error(f"Error getting whale loss: {e}")
             return 0.0
+
+    # ------------------------------------------------------------------
+    # Token blacklist / whitelist persistence
+    # ------------------------------------------------------------------
+
+    def _ensure_token_list_table(self):
+        try:
+            conn = self.get_connection()
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS user_token_lists (
+                    user_id INTEGER NOT NULL,
+                    list_type TEXT NOT NULL,
+                    token_address TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (user_id, list_type, token_address)
+                )
+            ''')
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.error(f"_ensure_token_list_table error: {e}")
+
+    def get_token_list(self, user_id: int, list_type: str) -> set:
+        """Return the set of token addresses for 'blacklist' or 'whitelist'."""
+        self._ensure_token_list_table()
+        try:
+            conn = self.get_connection()
+            rows = conn.execute(
+                'SELECT token_address FROM user_token_lists WHERE user_id=? AND list_type=?',
+                (user_id, list_type)
+            ).fetchall()
+            conn.close()
+            return {r[0] for r in rows}
+        except Exception as e:
+            logger.error(f"get_token_list error: {e}")
+            return set()
+
+    def add_to_token_list(self, user_id: int, list_type: str, token_address: str):
+        self._ensure_token_list_table()
+        try:
+            conn = self.get_connection()
+            conn.execute(
+                'INSERT OR IGNORE INTO user_token_lists (user_id, list_type, token_address) VALUES (?,?,?)',
+                (user_id, list_type, token_address)
+            )
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.error(f"add_to_token_list error: {e}")
+
+    def remove_from_token_list(self, user_id: int, list_type: str, token_address: str):
+        self._ensure_token_list_table()
+        try:
+            conn = self.get_connection()
+            conn.execute(
+                'DELETE FROM user_token_lists WHERE user_id=? AND list_type=? AND token_address=?',
+                (user_id, list_type, token_address)
+            )
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.error(f"remove_from_token_list error: {e}")
+
+    def update_pending_trade_token_amount(self, user_id: int, token_address: str, amount: float):
+        """Update the remaining token amount for an open smart trade."""
+        try:
+            conn = self.get_connection()
+            conn.execute(
+                'UPDATE smart_trades SET token_amount=? WHERE user_id=? AND token_address=? AND is_closed=0',
+                (amount, user_id, token_address)
+            )
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.error(f"update_pending_trade_token_amount error: {e}")
 
 
 # Singleton instance

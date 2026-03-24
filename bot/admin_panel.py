@@ -16,14 +16,14 @@ logger = logging.getLogger(__name__)
 
 class AdminPanel:
     """Admin panel for bot management"""
-    
+
     def __init__(self):
         """Initialize admin panel"""
         self.admin_ids = set()  # Loaded from config
         self.load_admins()
         self.wallet = SolanaWallet()
         logger.info("✅ Admin panel initialized")
-    
+
     def load_admins(self):
         """Load admin IDs from environment"""
         admin_list = os.getenv('ADMIN_IDS', '')
@@ -32,69 +32,97 @@ class AdminPanel:
             logger.info(f"📍 Loaded {len(self.admin_ids)} admin(s)")
         else:
             logger.warning("⚠️  No admin IDs configured in ADMIN_IDS")
-    
+
     def is_admin(self, user_id: int) -> bool:
-        """Check if user is admin"""
-        return user_id in self.admin_ids
-    
+        """Check if user is admin — env var list OR database flag."""
+        if user_id in self.admin_ids:
+            return True
+        # Fallback: check is_admin flag in the database
+        return db.is_user_admin(user_id)
+
     def promote_user_to_admin(self, user_id: int) -> bool:
-        """Promote user to admin"""
+        """Promote user to admin (user_id = telegram_id)"""
         try:
             self.admin_ids.add(user_id)
-            db.conn.execute(
+            conn = db.get_connection()
+            conn.execute(
                 "UPDATE users SET is_admin=1 WHERE telegram_id=?",
                 (user_id,)
             )
-            db.conn.commit()
+            conn.commit()
+            conn.close()
             logger.info(f"✅ User {user_id} promoted to admin")
             return True
         except Exception as e:
             logger.error(f"❌ Error promoting user: {e}")
             return False
-    
+
     def demote_admin(self, user_id: int) -> bool:
-        """Demote admin to regular user"""
+        """Demote admin to regular user (user_id = telegram_id)"""
         try:
             self.admin_ids.discard(user_id)
-            db.conn.execute(
+            conn = db.get_connection()
+            conn.execute(
                 "UPDATE users SET is_admin=0 WHERE telegram_id=?",
                 (user_id,)
             )
-            db.conn.commit()
+            conn.commit()
+            conn.close()
             logger.info(f"✅ User {user_id} demoted from admin")
             return True
         except Exception as e:
             logger.error(f"❌ Error demoting admin: {e}")
             return False
-    
+
     def get_all_users(self) -> List[Dict]:
         """Get all users"""
         try:
-            cursor = db.conn.execute(
-                "SELECT telegram_id, wallet_address, is_admin, created_at FROM users"
-            )
+            conn = db.get_connection()
+            try:
+                cursor = conn.execute(
+                    "SELECT telegram_id, wallet_address, is_admin, created_at FROM users"
+                )
+                rows = cursor.fetchall()
+                is_admin_col = True
+            except Exception:
+                # is_admin column not yet migrated — query without it
+                cursor = conn.execute(
+                    "SELECT telegram_id, wallet_address, created_at FROM users"
+                )
+                rows = cursor.fetchall()
+                is_admin_col = False
+
             users = []
-            for row in cursor.fetchall():
-                users.append({
-                    'telegram_id': row[0],
-                    'wallet_address': row[1],
-                    'is_admin': bool(row[2]),
-                    'created_at': row[3]
-                })
+            for row in rows:
+                if is_admin_col:
+                    users.append({
+                        'telegram_id': row[0],
+                        'wallet_address': row[1],
+                        'is_admin': bool(row[2]),
+                        'created_at': row[3]
+                    })
+                else:
+                    users.append({
+                        'telegram_id': row[0],
+                        'wallet_address': row[1],
+                        'is_admin': False,
+                        'created_at': row[2]
+                    })
+            conn.close()
             return users
         except Exception as e:
             logger.error(f"❌ Error getting users: {e}")
             return []
-    
+
     def get_user_wallets(self, user_id: int) -> List[Dict]:
-        """Get all wallets for a user"""
+        """Get all wallets for a user (user_id = telegram_id)"""
         try:
             user = db.get_user(user_id)
             if not user:
                 return []
-            
+
             wallets = []
-            
+
             # Main wallet
             if user.get('wallet_address'):
                 try:
@@ -106,25 +134,29 @@ class AdminPanel:
                         'is_encrypted': True,
                         'created_at': user.get('created_at')
                     })
-                except:
+                except Exception as e:
+                    logger.error(f"❌ Error getting main wallet balance: {e}")
                     wallets.append({
                         'type': 'main',
                         'address': user['wallet_address'],
                         'balance': 0,
                         'is_encrypted': True
                     })
-            
-            # Vanity wallets
-            cursor = db.conn.execute(
-                "SELECT wallet_address, prefix, difficulty, created_at FROM vanity_wallets WHERE telegram_id=?",
-                (user_id,)
+
+            # Vanity wallets — use user_id (PK) not telegram_id
+            internal_user_id = user.get('user_id')
+            conn = db.get_connection()
+            cursor = conn.execute(
+                "SELECT address, prefix, difficulty, created_at FROM vanity_wallets WHERE user_id=?",
+                (internal_user_id,)
             )
             for row in cursor.fetchall():
                 try:
                     balance = self.wallet.get_balance(row[0])
-                except:
+                except Exception as e:
+                    logger.error(f"❌ Error getting vanity wallet balance: {e}")
                     balance = 0
-                
+
                 wallets.append({
                     'type': 'vanity',
                     'address': row[0],
@@ -134,33 +166,36 @@ class AdminPanel:
                     'is_encrypted': True,
                     'created_at': row[3]
                 })
-            
+            conn.close()
+
             return wallets
         except Exception as e:
             logger.error(f"❌ Error getting user wallets: {e}")
             return []
-    
+
     def get_wallet_info(self, wallet_address: str) -> Optional[Dict]:
         """Get detailed wallet info"""
         try:
             balance = self.wallet.get_balance(wallet_address)
-            
+
+            conn = db.get_connection()
             # Get associated trades
-            cursor = db.conn.execute(
+            cursor = conn.execute(
                 "SELECT COUNT(*), SUM(CASE WHEN output_amount > input_amount THEN 1 ELSE 0 END) FROM trades WHERE input_mint=?",
                 (wallet_address,)
             )
             trade_data = cursor.fetchone()
             total_trades = trade_data[0] or 0
             winning_trades = trade_data[1] or 0
-            
+
             # Calculate total profit
-            cursor = db.conn.execute(
+            cursor = conn.execute(
                 "SELECT SUM(output_amount - input_amount) FROM trades WHERE input_mint=? OR output_mint=?",
                 (wallet_address, wallet_address)
             )
             profit = cursor.fetchone()[0] or 0
-            
+            conn.close()
+
             return {
                 'address': wallet_address,
                 'balance': balance,
@@ -173,29 +208,31 @@ class AdminPanel:
         except Exception as e:
             logger.error(f"❌ Error getting wallet info: {e}")
             return None
-    
+
     def get_wallet_balance(self, wallet_address: str) -> float:
         """Get SOL balance for wallet"""
         try:
-            return self.wallet.get_balance(wallet_address)
+            return self.wallet.get_balance(wallet_address) or 0.0
         except Exception as e:
             logger.error(f"❌ Error getting balance: {e}")
             return 0.0
-    
+
     def get_wallet_profit(self, wallet_address: str) -> Dict:
         """Calculate profit/loss for wallet"""
         try:
-            cursor = db.conn.execute("""
-                SELECT 
+            conn = db.get_connection()
+            cursor = conn.execute("""
+                SELECT
                     SUM(CASE WHEN output_amount > input_amount THEN (output_amount - input_amount) ELSE 0 END) as total_profit,
                     SUM(CASE WHEN output_amount < input_amount THEN (output_amount - input_amount) ELSE 0 END) as total_loss,
                     COUNT(*) as total_trades,
                     SUM(CASE WHEN output_amount > input_amount THEN 1 ELSE 0 END) as winning_trades
-                FROM trades 
-                WHERE telegram_id IN (SELECT telegram_id FROM users WHERE wallet_address=?)
+                FROM trades
+                WHERE user_id IN (SELECT user_id FROM users WHERE wallet_address=?)
             """, (wallet_address,))
-            
+
             row = cursor.fetchone()
+            conn.close()
             if not row:
                 return {
                     'total_profit': 0,
@@ -204,14 +241,14 @@ class AdminPanel:
                     'total_trades': 0,
                     'win_rate': 0.0
                 }
-            
+
             total_profit = row[0] or 0
             total_loss = row[1] or 0
             total_trades = row[2] or 0
             winning_trades = row[3] or 0
             net_profit = total_profit + total_loss
             win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
-            
+
             return {
                 'total_profit': total_profit,
                 'total_loss': abs(total_loss),
@@ -228,14 +265,14 @@ class AdminPanel:
                 'total_trades': 0,
                 'win_rate': 0.0
             }
-    
+
     def get_encrypted_key_preview(self, user_id: int) -> Optional[str]:
         """Get safe preview of encrypted private key (first/last few chars only)"""
         try:
             user = db.get_user(user_id)
             if not user or not user.get('encrypted_private_key'):
                 return None
-            
+
             encrypted = user['encrypted_private_key']
             if len(encrypted) > 20:
                 return f"{encrypted[:8]}...{encrypted[-8:]}"
@@ -244,20 +281,19 @@ class AdminPanel:
         except Exception as e:
             logger.error(f"❌ Error getting key preview: {e}")
             return None
-    
+
     def decrypt_wallet_key(self, user_id: int, master_password: str) -> Optional[str]:
         """Decrypt wallet private key for viewing (admin only)"""
         try:
             # Verify master password
-            import os
             if master_password != os.getenv('ENCRYPTION_MASTER_PASSWORD'):
                 logger.warning(f"⚠️  Failed decrypt attempt by {user_id} - wrong password")
                 return None
-            
+
             user = db.get_user(user_id)
             if not user or not user.get('encrypted_private_key'):
                 return None
-            
+
             # Decrypt using encryption instance
             decrypted = encryption.decrypt(user['encrypted_private_key'])
             if decrypted:
@@ -266,71 +302,60 @@ class AdminPanel:
         except Exception as e:
             logger.error(f"❌ Error decrypting key: {e}")
             return None
-    
+
     def delete_user_wallet(self, user_id: int, confirm: bool = False) -> Tuple[bool, str]:
-        """Delete user wallet and all associated data"""
+        """Delete user wallet and all associated data (user_id = telegram_id)"""
         try:
             if not confirm:
                 return False, "Confirmation required"
-            
-            # Delete trades
-            db.conn.execute("DELETE FROM trades WHERE telegram_id=?", (user_id,))
-            
-            # Delete risk orders
-            db.conn.execute("DELETE FROM risk_orders WHERE telegram_id=?", (user_id,))
-            
-            # Delete vanity wallets
-            db.conn.execute("DELETE FROM vanity_wallets WHERE telegram_id=?", (user_id,))
-            
-            # Delete watched wallets
-            db.conn.execute("DELETE FROM watched_wallets WHERE telegram_id=?", (user_id,))
-            
-            # Delete pending trades
-            db.conn.execute("DELETE FROM pending_trades WHERE telegram_id=?", (user_id,))
-            
-            # Delete user
-            db.conn.execute("DELETE FROM users WHERE telegram_id=?", (user_id,))
-            
-            db.conn.commit()
+
+            conn = db.get_connection()
+
+            # Resolve internal user_id from telegram_id
+            cursor = conn.execute("SELECT user_id FROM users WHERE telegram_id=?", (user_id,))
+            row = cursor.fetchone()
+            if not row:
+                conn.close()
+                return False, "User not found"
+            internal_id = row[0]
+
+            conn.execute("DELETE FROM trades WHERE user_id=?", (internal_id,))
+            conn.execute("DELETE FROM risk_orders WHERE user_id=?", (internal_id,))
+            conn.execute("DELETE FROM vanity_wallets WHERE user_id=?", (internal_id,))
+            conn.execute("DELETE FROM watched_wallets WHERE user_id=?", (internal_id,))
+            conn.execute("DELETE FROM pending_trades WHERE user_id=?", (internal_id,))
+            conn.execute("DELETE FROM users WHERE user_id=?", (internal_id,))
+
+            conn.commit()
+            conn.close()
             logger.info(f"✅ User {user_id} and all wallet data deleted")
             return True, "User wallet deleted successfully"
         except Exception as e:
             logger.error(f"❌ Error deleting wallet: {e}")
             return False, f"Error: {str(e)}"
-    
+
     def get_bot_stats(self) -> Dict:
         """Get overall bot statistics"""
         try:
-            # User count
-            cursor = db.conn.execute("SELECT COUNT(*) FROM users")
-            total_users = cursor.fetchone()[0] or 0
-            
-            # Admin count
-            cursor = db.conn.execute("SELECT COUNT(*) FROM users WHERE is_admin=1")
-            total_admins = cursor.fetchone()[0] or 0
-            
-            # Trade count
-            cursor = db.conn.execute("SELECT COUNT(*) FROM trades")
-            total_trades = cursor.fetchone()[0] or 0
-            
-            # Total profit
-            cursor = db.conn.execute(
+            conn = db.get_connection()
+
+            total_users = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] or 0
+            try:
+                total_admins = conn.execute("SELECT COUNT(*) FROM users WHERE is_admin=1").fetchone()[0] or 0
+            except Exception:
+                total_admins = 0
+            total_trades = conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0] or 0
+            total_profit = conn.execute(
                 "SELECT SUM(output_amount - input_amount) FROM trades"
-            )
-            total_profit = cursor.fetchone()[0] or 0
-            
-            # Vanity wallets generated
-            cursor = db.conn.execute("SELECT COUNT(*) FROM vanity_wallets")
-            total_vanity = cursor.fetchone()[0] or 0
-            
-            # Active risk orders
-            cursor = db.conn.execute("SELECT COUNT(*) FROM risk_orders WHERE status='active'")
-            active_orders = cursor.fetchone()[0] or 0
-            
-            # Copy trading wallets
-            cursor = db.conn.execute("SELECT COUNT(*) FROM watched_wallets")
-            copy_targets = cursor.fetchone()[0] or 0
-            
+            ).fetchone()[0] or 0
+            total_vanity = conn.execute("SELECT COUNT(*) FROM vanity_wallets").fetchone()[0] or 0
+            active_orders = conn.execute(
+                "SELECT COUNT(*) FROM risk_orders WHERE is_active=1"
+            ).fetchone()[0] or 0
+            copy_targets = conn.execute("SELECT COUNT(*) FROM watched_wallets").fetchone()[0] or 0
+
+            conn.close()
+
             return {
                 'total_users': total_users,
                 'total_admins': total_admins,
@@ -344,13 +369,13 @@ class AdminPanel:
         except Exception as e:
             logger.error(f"❌ Error getting bot stats: {e}")
             return {}
-    
+
     def generate_admin_report(self) -> str:
         """Generate comprehensive admin report"""
         try:
             stats = self.get_bot_stats()
             users = self.get_all_users()
-            
+
             report = (
                 f"📊 **BOT ADMIN REPORT**\n\n"
                 f"**User Statistics:**\n"

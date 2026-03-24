@@ -18,13 +18,14 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 from keep_alive import AggressiveKeepAlive
+from config import DEXSCREENER_API_URL
 
 
 class WhaleWalletTracker:
     """Track whale wallets using ONLY DexScreener"""
-    
+
     def __init__(self):
-        self.dexscreener_url = "https://api.dexscreener.com/latest/dex"
+        self.dexscreener_url = f"{DEXSCREENER_API_URL}/latest/dex"
         self.whale_wallets = [
             "HUpPyLU8KWisCAr3mzWy2FKT6uuxQ2qGgJQxyTpDoes5",
             "8Nty9vLxN3ZtT4DQjJ5uFrKtvan28rySiGVJ5dPzu81u", 

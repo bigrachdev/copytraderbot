@@ -8,7 +8,7 @@ from solders.pubkey import Pubkey
 import base58
 import json
 import requests
-from config import SOLANA_RPC_URL
+from config import SOLANA_RPC_URL, RPC_TIMEOUT
 
 logger = logging.getLogger(__name__)
 
@@ -31,11 +31,21 @@ class SolanaWallet:
             return None, None
     
     def import_keypair(self, private_key_base58: str) -> Optional[Keypair]:
-        """Import keypair from base58 private key"""
+        """Import keypair from base58-encoded private key.
+
+        Handles both formats:
+          - 32-byte seed  (Phantom / most wallets)
+          - 64-byte keypair bytes (Solana CLI)
+        """
         try:
             secret_bytes = base58.b58decode(private_key_base58)
-            keypair = Keypair.from_secret_key(secret_bytes)
-            return keypair
+            if len(secret_bytes) == 64:
+                return Keypair.from_bytes(secret_bytes)
+            elif len(secret_bytes) == 32:
+                return Keypair.from_seed(secret_bytes)
+            else:
+                logger.error(f"Unexpected key length: {len(secret_bytes)} bytes")
+                return None
         except Exception as e:
             logger.error(f"Error importing keypair: {e}")
             return None
@@ -44,13 +54,13 @@ class SolanaWallet:
         """Get SOL balance for address"""
         try:
             pubkey = Pubkey.from_string(public_key)
-            rayload = {
+            payload = {
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "getBalance",
                 "params": [public_key]
             }
-            response = requests.post(self.rpc_url, json=payload, timeout=10)
+            response = requests.post(self.rpc_url, json=payload, timeout=RPC_TIMEOUT)
             if response.status_code == 200:
                 data = response.json()
                 return data['result']['value'] / 1e9  # Convert lamports to SOL
@@ -68,9 +78,9 @@ class SolanaWallet:
             return None
     
     def validate_address(self, address: str) -> bool:
-        """Validate Solana address format"""
+        """Validate Solana address format (base58, 32-byte pubkey)"""
         try:
-            PublicKey(address)
+            Pubkey.from_string(address)
             return True
         except Exception:
             return False
@@ -84,7 +94,7 @@ class SolanaWallet:
                 "method": "sendTransaction",
                 "params": [transaction_data]
             }
-            response = requests.post(self.rpc_url, json=payload, timeout=10)
+            response = requests.post(self.rpc_url, json=payload, timeout=RPC_TIMEOUT)
             if response.status_code == 200:
                 data = response.json()
                 return data['result']
@@ -101,17 +111,10 @@ class SolanaWallet:
                 "method": "getLatestBlockhash",
                 "params": []
             }
-            response = requests.post(self.rpc_url, json=payload, timeout=10)
+            response = requests.post(self.rpc_url, json=payload, timeout=RPC_TIMEOUT)
             if response.status_code == 200:
                 data = response.json()
                 return data['result']['value']['blockhash']
-        except Exception as e:
-            logger.error(f"Error getting blockhash: {e}")
-def get_recent_blockhash(self) -> Optional[str]:
-        """Get recent blockhash for transactions"""
-        try:
-            response = self.client.get_latest_blockhash()
-            return response.value.blockhash
         except Exception as e:
             logger.error(f"Error getting blockhash: {e}")
             return None
@@ -119,14 +122,12 @@ def get_recent_blockhash(self) -> Optional[str]:
 
 # Utility function for encryption
 def encrypt_private_key(private_key: str, password: str = None) -> str:
-    """Encrypt private key for storage"""
-    # In production, use proper encryption like cryptography.Fernet
-    # For now, simple base64 (NOT secure for production!)
-    import base64
-    return base64.b64encode(private_key.encode()).decode()
+    """Encrypt private key for storage using Fernet with random salt"""
+    from wallet.encryption import encryption
+    return encryption.encrypt(private_key)
 
 
 def decrypt_private_key(encrypted_key: str, password: str = None) -> str:
     """Decrypt stored private key"""
-    import base64
-    return base64.b64decode(encrypted_key.encode()).decode()
+    from wallet.encryption import encryption
+    return encryption.decrypt(encrypted_key)

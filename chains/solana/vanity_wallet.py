@@ -67,7 +67,7 @@ class VanityWalletGenerator:
         logger.info(f"   Difficulty: {difficulty} (estimated ~{10**(difficulty-2):.0e} attempts)")
         
         self.found = False
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             tasks = []
