@@ -75,7 +75,7 @@ class Database:
 **Apply this change to all `add_*`, `update_*`, and `delete_*` methods in database.py**
 
 **Test:**
-```bash
+```bash  
 # Run with concurrent users
 python -c "
 from data.database import db
