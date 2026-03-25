@@ -1,0 +1,72 @@
+services:
+  # Main Bot Service (Telegram Bot + Background Workers)
+  - type: web
+    name: mbot-bot
+    env: python
+    region: oregon
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: PORT
+        value: 10000
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHANNEL_ID
+        sync: false
+      - key: ADMIN_IDS
+        sync: false
+      - key: SOLANA_RPC_URL
+        sync: false
+      - key: SOLANA_WSS_URL
+        sync: false
+      - key: BIRDEYE_API_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: ENCRYPTION_MASTER_PASSWORD
+        generateValue: true
+      - key: LOG_LEVEL
+        value: INFO
+      - key: COPY_TRADE_CHECK_INTERVAL
+        value: 10
+      - key: WALLET_MONITOR_INTERVAL
+        value: 5
+      - key: SLIPPAGE_TOLERANCE
+        value: 2.0
+      - key: MIN_TRADE_AMOUNT
+        value: 0.01
+      - key: DEFAULT_STOPLOSS_PERCENT
+        value: 5.0
+      - key: DEFAULT_TAKEPROFIT_PERCENT
+        value: 10.0
+      - key: JITO_TIP_AMOUNT
+        value: 0.001
+      - key: USE_PRIVATE_POOLS
+        value: true
+
+  # Web Dashboard Service (Flask API)
+  - type: web
+    name: mbot-dashboard
+    env: python
+    region: oregon
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m flask run --host=0.0.0.0 --port=5000
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: WEB_PORT
+        value: 5000
+      - key: FLASK_SECRET_KEY
+        generateValue: true
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: ENCRYPTION_MASTER_PASSWORD
+        sync: false
+      - key: LOG_LEVEL
+        value: INFO

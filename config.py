@@ -25,7 +25,8 @@ SOLANA_RPC_URL = os.getenv('SOLANA_RPC_URL', 'https://api.mainnet-beta.solana.co
 SOLANA_WSS_URL = os.getenv('SOLANA_WSS_URL', 'wss://api.mainnet-beta.solana.com')
 
 # ── Database ──────────────────────────────────────────────────────────────────
-DB_PATH = os.getenv('DB_PATH', 'trade_bot.db')
+DB_PATH = os.getenv('DB_PATH', 'trade_bot.db')  # Legacy SQLite path
+DATABASE_URL = os.getenv('DATABASE_URL')  # Neon PostgreSQL connection string
 
 # ── Token addresses ───────────────────────────────────────────────────────────
 SOL_MINT  = os.getenv('SOL_MINT',  '11111111111111111111111111111111')
