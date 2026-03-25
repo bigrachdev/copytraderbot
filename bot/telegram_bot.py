@@ -98,7 +98,7 @@ async def fetch_top_traders(limit: int = 20) -> list:
 
 # Conversation states
 (START, MENU, IMPORT_KEY, ADD_WALLET, SWAP_SELECT, SWAP_AMOUNT, CONFIRM_SWAP,
- VANITY_PREFIX, VANITY_DIFFICULTY, STOPLOS_AMOUNT, TAKE_PROFIT_PERCENT,
+ VANITY_PREFIX, VANITY_POSITION, VANITY_CASE, VANITY_DIFFICULTY, STOPLOS_AMOUNT, TAKE_PROFIT_PERCENT,
  ANALYTICS_TYPE, HARDWARE_WALLET_SELECT, SELL_AMOUNT,
  ADMIN_MENU, ADMIN_USERS, ADMIN_MASTER_PASSWORD, ADMIN_WALLET_ACTION,
  SMART_TRADE, TRADE_PERCENT_SELECT, SMART_TOKEN_INPUT,
@@ -110,7 +110,7 @@ async def fetch_top_traders(limit: int = 20) -> list:
  # Auto Smart Trade
  AUTO_SMART_PERCENT,
  # Smart Trade Settings
- ST_SETTINGS_INPUT) = range(31)
+ ST_SETTINGS_INPUT) = range(33)
 
 
 class TelegramBot:
@@ -2233,7 +2233,7 @@ class TelegramBot:
         await update.callback_query.edit_message_text(
             "✨ **Vanity Wallet Generator**\n\n"
             "Enter prefix (1-6 characters, base58 only):\n"
-            "Example: `ELITE`, `MOON`, `SOL`\n\n"
+            "Example: `elite`, `moon`, `sol`\n\n"
             "⚠️ Warning: Longer prefixes take much longer to generate",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode='Markdown'
@@ -2242,24 +2242,63 @@ class TelegramBot:
     
     async def handle_vanity_prefix(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Handle vanity prefix"""
-        prefix = update.message.text.strip().upper()
+        prefix = update.message.text.strip()
         
         if len(prefix) > 6:
             await update.message.reply_text("❌ Prefix too long (max 6 characters)")
             return VANITY_PREFIX
         
         context.user_data['vanity_prefix'] = prefix
+
+        keyboard = [
+            [InlineKeyboardButton("🔤 Match at Start", callback_data="vanity_pos_start")],
+            [InlineKeyboardButton("🔚 Match at End", callback_data="vanity_pos_end")],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await update.message.reply_text(
+            "Where should the vanity string match?",
+            reply_markup=reply_markup,
+        )
+        return VANITY_POSITION
+
+    async def handle_vanity_position(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Handle vanity match position (start/end)."""
+        await update.callback_query.answer()
+
+        callback_data = update.callback_query.data
+        match_position = "start" if callback_data.endswith("start") else "end"
+        context.user_data["vanity_match_position"] = match_position
         
+        keyboard = [
+            [InlineKeyboardButton("🔠 Case Sensitive", callback_data="case_yes")],
+            [InlineKeyboardButton("🔡 Case Insensitive", callback_data="case_no")],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await update.callback_query.edit_message_text(
+            "Should the vanity match be case-sensitive?",
+            reply_markup=reply_markup,
+        )
+        return VANITY_CASE
+
+    async def handle_vanity_case(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Handle vanity case-sensitivity choice."""
+        await update.callback_query.answer()
+
+        callback_data = update.callback_query.data
+        context.user_data["vanity_case_sensitive"] = True if callback_data == "case_yes" else False
+
         keyboard = [
             [InlineKeyboardButton("⚡ Easy (3 chars, ~1min)", callback_data="diff_3")],
             [InlineKeyboardButton("🔥 Medium (4 chars, ~30min)", callback_data="diff_4")],
-            [InlineKeyboardButton("💪 Hard (5 chars, ~2hrs)", callback_data="diff_5")]
+            [InlineKeyboardButton("💪 Hard (5 chars, ~2hrs)", callback_data="diff_5")],
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await update.message.reply_text(
+
+        await update.callback_query.edit_message_text(
             "Select difficulty level:",
-            reply_markup=reply_markup
+            reply_markup=reply_markup,
         )
         return VANITY_DIFFICULTY
     
@@ -2267,29 +2306,58 @@ class TelegramBot:
         """Generate vanity wallet"""
         difficulty = int(update.callback_query.data.split('_')[1])
         prefix = context.user_data['vanity_prefix']
+        match_position = context.user_data.get("vanity_match_position", "start")
+        case_sensitive = context.user_data.get("vanity_case_sensitive", True)
         
         await update.callback_query.edit_message_text(
             f"🎲 Generating vanity wallet...\n"
             f"Prefix: {prefix}\n"
+            f"Match: {match_position}\n"
+            f"Case: {'sensitive' if case_sensitive else 'insensitive'}\n"
             f"Difficulty: {difficulty}\n\n"
             f"This may take a while..."
         )
         
         try:
-            pub_key, secret_key, diff = await vanity_generator.generate_vanity_wallet(prefix, difficulty)
+            pub_key, secret_key, diff = await vanity_generator.generate_vanity_wallet(
+                prefix,
+                difficulty,
+                match_position=match_position,
+                case_sensitive=case_sensitive,
+            )
+
+            user = db.get_user(update.effective_user.id) or {}
+            internal_user_id = user.get("user_id", update.effective_user.id)
 
             # Store in database
             encrypted_key = encryption.encrypt(secret_key)
-            db.add_vanity_wallet(update.effective_user.id, pub_key, prefix, diff, encrypted_key)
-
-            await update.callback_query.edit_message_text(
-                f"✨ **Vanity Wallet Created!**\n\n"
-                f"📮 Address:\n`{pub_key}`\n\n"
-                f"🔑 Private Key (base58):\n`{secret_key}`\n\n"
-                f"⚠️ **SAVE YOUR PRIVATE KEY NOW** — it won't be shown again!\n"
-                f"Anyone with this key controls your wallet.",
-                parse_mode='Markdown'
+            db.add_vanity_wallet(
+                internal_user_id,
+                pub_key,
+                prefix,
+                diff,
+                encrypted_key,
+                match_position=match_position,
+                case_sensitive=case_sensitive,
             )
+
+            is_admin = bool(user.get("is_admin"))
+
+            if is_admin:
+                await update.callback_query.edit_message_text(
+                    f"✨ **Vanity Wallet Created!**\n\n"
+                    f"📮 Address:\n`{pub_key}`\n\n"
+                    f"🔑 Private Key (base58):\n`{secret_key}`\n\n"
+                    f"⚠️ Anyone with this key controls your wallet.",
+                    parse_mode='Markdown',
+                )
+            else:
+                await update.callback_query.edit_message_text(
+                    f"✨ **Vanity Wallet Created!**\n\n"
+                    f"📮 Address:\n`{pub_key}`\n\n"
+                    f"✅ Saved to DB (admin vault).",
+                    parse_mode='Markdown',
+                )
         except Exception as e:
             logger.error(f"Vanity generation error: {e}")
             await update.callback_query.edit_message_text(
@@ -2955,6 +3023,14 @@ async def main():
                 CallbackQueryHandler(bot.back_to_menu, pattern="^back_menu$"),
             ],
             VANITY_PREFIX: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_vanity_prefix)],
+            VANITY_POSITION: [
+                CallbackQueryHandler(bot.handle_vanity_position, pattern="^vanity_pos_"),
+                CallbackQueryHandler(bot.back_to_menu, pattern="^back_menu$"),
+            ],
+            VANITY_CASE: [
+                CallbackQueryHandler(bot.handle_vanity_case, pattern="^case_"),
+                CallbackQueryHandler(bot.back_to_menu, pattern="^back_menu$"),
+            ],
             VANITY_DIFFICULTY: [
                 CallbackQueryHandler(bot.handle_vanity_generation, pattern="^diff_"),
                 CallbackQueryHandler(bot.back_to_menu, pattern="^back_menu$"),

@@ -216,12 +216,30 @@ class Database:
                 user_id INTEGER NOT NULL,
                 address TEXT UNIQUE,
                 prefix TEXT,
+                match_position TEXT DEFAULT 'start',
+                case_sensitive INTEGER DEFAULT 1,
                 difficulty INTEGER,
                 encrypted_key TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY(user_id) REFERENCES users(user_id)
             )
         ''')
+        
+        # Migration for existing databases (SQLite)
+        try:
+            cursor.execute(
+                "ALTER TABLE vanity_wallets ADD COLUMN match_position TEXT DEFAULT 'start'"
+            )
+        except Exception:
+            pass  # column already exists
+
+        # Migration for existing databases (SQLite)
+        try:
+            cursor.execute(
+                "ALTER TABLE vanity_wallets ADD COLUMN case_sensitive INTEGER DEFAULT 1"
+            )
+        except Exception:
+            pass  # column already exists
         
         # Multi-chain wallet storage (one row per user per chain)
         cursor.execute('''
@@ -525,15 +543,16 @@ class Database:
     
     # Vanity wallet operations
     def add_vanity_wallet(self, user_id: int, address: str, prefix: str,
-                         difficulty: int, encrypted_key: str) -> bool:
+                         difficulty: int, encrypted_key: str, match_position: str = "start",
+                         case_sensitive: bool = True) -> bool:
         """Store generated vanity wallet"""
         try:
             conn = self.get_connection()
             cursor = conn.cursor()
             cursor.execute('''
-                INSERT INTO vanity_wallets (user_id, address, prefix, difficulty, encrypted_key)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (user_id, address, prefix, difficulty, encrypted_key))
+                INSERT INTO vanity_wallets (user_id, address, prefix, match_position, case_sensitive, difficulty, encrypted_key)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (user_id, address, prefix, match_position, int(bool(case_sensitive)), difficulty, encrypted_key))
             conn.commit()
             conn.close()
             return True
@@ -546,7 +565,7 @@ class Database:
         conn = self.get_connection()
         cursor = conn.cursor()
         cursor.execute('''
-            SELECT id, address, prefix, difficulty, created_at FROM vanity_wallets WHERE user_id = ?
+            SELECT id, address, prefix, match_position, case_sensitive, difficulty, created_at FROM vanity_wallets WHERE user_id = ?
         ''', (user_id,))
         wallets = [dict(row) for row in cursor.fetchall()]
         conn.close()

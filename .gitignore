@@ -1,0 +1,32 @@
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Database (SQLite)
+*.db
+*.sqlite
+*.sqlite3
+trade_bot.db
+
+# Logs
+*.log
+bot.log
+
+# Python cache / artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+
+# IDE/editor
+.vscode/
+.idea/
+
+# Local tooling / AI workspace
+.claude/
+

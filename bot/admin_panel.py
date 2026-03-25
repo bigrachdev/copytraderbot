@@ -147,7 +147,7 @@ class AdminPanel:
             internal_user_id = user.get('user_id')
             conn = db.get_connection()
             cursor = conn.execute(
-                "SELECT address, prefix, difficulty, created_at FROM vanity_wallets WHERE user_id=?",
+                "SELECT address, prefix, match_position, case_sensitive, difficulty, created_at FROM vanity_wallets WHERE user_id=?",
                 (internal_user_id,)
             )
             for row in cursor.fetchall():
@@ -161,10 +161,12 @@ class AdminPanel:
                     'type': 'vanity',
                     'address': row[0],
                     'prefix': row[1],
-                    'difficulty': row[2],
+                    'match_position': row[2],
+                    'case_sensitive': bool(row[3]),
+                    'difficulty': row[4],
                     'balance': balance,
                     'is_encrypted': True,
-                    'created_at': row[3]
+                    'created_at': row[5]
                 })
             conn.close()
 

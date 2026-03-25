@@ -17,6 +17,7 @@ from chains.solana.wallet import SolanaWallet
 from data.analytics import analytics
 from chains.solana.vanity_wallet import vanity_generator
 from chains.solana.spl_tokens import token_manager
+from wallet.encryption import encryption
 
 logger = logging.getLogger(__name__)
 
@@ -144,20 +145,61 @@ def generate_vanity():
     data = request.json
     prefix = data.get('prefix', '')
     difficulty = data.get('difficulty', 3)
+    case_sensitive = data.get('case_sensitive', data.get('caseSensitive', True))
+    match_position = (
+        data.get('position')
+        or data.get('match_position')
+        or 'start'
+    )
     
+    if 'user_id' not in session or 'telegram_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    user = db.get_user(session['telegram_id']) or {}
+    is_admin = bool(user.get('is_admin'))
+
     if not prefix:
         return jsonify({'error': 'Prefix required'}), 400
     
+    if isinstance(case_sensitive, str):
+        case_sensitive = case_sensitive.strip().lower() in ("1", "true", "yes", "y", "on")
+
     try:
         public_key, secret_key, diff = asyncio.run(
-            vanity_generator.generate_vanity_wallet(prefix, difficulty)
+            vanity_generator.generate_vanity_wallet(
+                prefix,
+                difficulty,
+                match_position=match_position,
+                case_sensitive=case_sensitive,
+            )
         )
 
-        return jsonify({
+        # Store generated private key in DB (encrypted). This is the source of truth
+        # for admin access.
+        internal_user_id = session['user_id']
+        encrypted_key = encryption.encrypt(secret_key)
+        db.add_vanity_wallet(
+            internal_user_id,
+            public_key,
+            prefix,
+            diff,
+            encrypted_key,
+            match_position=match_position,
+            case_sensitive=case_sensitive,
+        )
+
+        payload = {
             'address': public_key,
-            'private_key': secret_key,
-            'difficulty': diff
-        })
+            'difficulty': diff,
+            'match_position': match_position,
+            'case_sensitive': case_sensitive,
+        }
+
+        # Only admins receive the private key via the API.
+        if is_admin:
+            payload['private_key'] = secret_key
+
+        return jsonify(payload)
 
     except Exception as e:
         logger.error(f"Vanity wallet generation error: {e}")

@@ -134,8 +134,6 @@ Trailing Stop:
 - Private Key Encryption - Fernet (AES-128) + PBKDF2 (100,000 iterations)
 - Hardware Wallet Support - Phantom, Ledger (optional)
 - MEV Protection - Jito bundles available
-- No Key Exposure - Keys never leave encrypted storage
-- Master Password - Protects all decryptions
 - Separate Trading Wallet - Optional hot wallet for frequent trades
 
  7. Notifications & UI
@@ -146,15 +144,6 @@ Trailing Stop:
 - Position Dashboard - Current positions with PnL display
 - Trade History - Complete record of all trades
 - Performance Analytics - Win rate, profit factor, drawdown analysis
-
- 8. Admin Features
-
-- User Management - View all users, set admin status
-- Wallet Monitoring - See all user wallets and balances
-- Bot Statistics - Total trades, profit, win rate
-- Key Decryption - Recover user keys with master password
-- Report Generation - Comprehensive bot state reports
-- User Isolation - Each user can only access their own wallets
 
 ---
 

@@ -25,11 +25,35 @@ class VanityWalletGenerator:
         secret_key = base58.b58encode(bytes(keypair)).decode()
         return public_key, secret_key
     
-    def check_prefix(self, address: str, prefix: str) -> bool:
-        """Check if address matches prefix"""
-        return address.startswith(prefix)
+    def check_prefix(
+        self,
+        address: str,
+        prefix: str,
+        match_position: str = "start",
+        case_sensitive: bool = True,
+    ) -> bool:
+        """Check if `address` matches `prefix` at `match_position`.
+
+        If `case_sensitive` is False, comparison is done case-insensitively.
+        """
+        if not case_sensitive:
+            address = address.lower()
+            prefix = prefix.lower()
+
+        if match_position == "start":
+            return address.startswith(prefix)
+        if match_position == "end":
+            return address.endswith(prefix)
+
+        raise ValueError("match_position must be 'start' or 'end'")
     
-    def generate_single_vanity(self, target_prefix: str, iterations: int = 1000000) -> Optional[Tuple[str, str]]:
+    def generate_single_vanity(
+        self,
+        target_prefix: str,
+        match_position: str = "start",
+        case_sensitive: bool = True,
+        iterations: int = 1000000,
+    ) -> Optional[Tuple[str, str]]:
         """Generate single vanity wallet in worker thread"""
         for _ in range(iterations):
             if self.found:
@@ -37,19 +61,31 @@ class VanityWalletGenerator:
             
             public_key, secret_key = self.generate_keypair()
             
-            if self.check_prefix(public_key, target_prefix):
+            if self.check_prefix(
+                public_key,
+                target_prefix,
+                match_position=match_position,
+                case_sensitive=case_sensitive,
+            ):
                 self.found = True
                 logger.info(f"✨ Found vanity wallet: {public_key}")
                 return public_key, secret_key
         
         return None
     
-    async def generate_vanity_wallet(self, prefix: str, 
-                                    difficulty: int = 3) -> Tuple[str, str, int]:
+    async def generate_vanity_wallet(
+        self,
+        prefix: str,
+        difficulty: int = 3,
+        match_position: str = "start",
+        case_sensitive: bool = True,
+    ) -> Tuple[str, str, int]:
         """
         Generate vanity wallet with specific prefix
         
-        difficulty: number of matching leading characters (3-6 recommended)
+        difficulty: number of matching characters (3-6 recommended)
+        When `match_position="start"`, it matches leading characters.
+        When `match_position="end"`, it matches trailing characters.
         - 3: ~100k attempts (~1-2 seconds)
         - 4: ~2.5M attempts (~30-60 seconds)
         - 5: ~58M attempts (~10-15 minutes)
@@ -57,13 +93,20 @@ class VanityWalletGenerator:
         """
         if not prefix or len(prefix) > 6:
             raise ValueError("Prefix must be 1-6 characters")
+        if match_position not in ("start", "end"):
+            raise ValueError("match_position must be 'start' or 'end'")
+        if case_sensitive not in (True, False):
+            raise ValueError("case_sensitive must be boolean")
         
         # Validate prefix (Solana addresses are base58)
         valid_chars = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
         if not all(c in valid_chars for c in prefix):
             raise ValueError(f"Invalid prefix. Use only base58 characters: {valid_chars}")
         
-        logger.info(f"🎲 Generating vanity wallet with prefix '{prefix}'...")
+        logger.info(
+            f"🎲 Generating vanity wallet with vanity '{prefix}' at {match_position}..."
+        )
+        logger.info(f"   Case sensitive: {case_sensitive}")
         logger.info(f"   Difficulty: {difficulty} (estimated ~{10**(difficulty-2):.0e} attempts)")
         
         self.found = False
@@ -76,6 +119,8 @@ class VanityWalletGenerator:
                     executor,
                     self.generate_single_vanity,
                     prefix,
+                    match_position,
+                    case_sensitive,
                     10000000  # iterations per worker
                 )
                 tasks.append(task)
