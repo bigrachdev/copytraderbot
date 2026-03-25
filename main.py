@@ -27,7 +27,7 @@ load_dotenv()
 
 
 async def main():
-    """Main async entry point"""
+    """Main async entry point"""  
     logger.info("=" * 60)
     logger.info("🚀 ULTIMATE DEX COPY TRADING BOT")
     logger.info("=" * 60)
