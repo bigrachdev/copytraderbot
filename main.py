@@ -10,7 +10,6 @@ from bot.telegram_bot import main as start_telegram_bot
 from wallet.wallet_monitor import monitor
 from keep_alive import AggressiveKeepAlive
 from config import LOG_LEVEL
-import subprocess
 
 # Configure logging
 logging.basicConfig(
@@ -38,16 +37,6 @@ async def main():
     keep_alive_thread = threading.Thread(target=keep_alive.start, daemon=True)
     keep_alive_thread.start()
     logger.info("✅ Keep-Alive service started")
-    
-    # Start web dashboard in separate thread
-    web_port = int(os.getenv('WEB_PORT', 5000))
-    web_thread = threading.Thread(
-        target=lambda: subprocess.run(['python', 'bot/web_dashboard.py']),
-        daemon=True
-    )
-    web_thread.start()
-    logger.info(f"✅ Web dashboard started on port {web_port}")
-    logger.info(f"   📊 Access at http://localhost:{web_port}")
     
     # Start wallet monitoring in background
     monitor_task = asyncio.create_task(monitor.run())
