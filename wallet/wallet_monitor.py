@@ -21,22 +21,23 @@ class WalletMonitor:
         """Start monitoring all users' watched wallets"""
         try:
             logger.info("🚀 Starting wallet monitoring service...")
-            
-            # Get all users with watched wallets
-            conn = db.get_connection()
-            cursor = conn.cursor()
-            cursor.execute('SELECT DISTINCT user_id FROM watched_wallets WHERE is_active = 1')
-            user_ids = [row[0] for row in cursor.fetchall()]
-            conn.close()
-            
+
+            # Get all users with watched wallets using db abstraction
+            users = db.get_all_users()
+            user_ids = []
+            for user in (users or []):
+                wallets = db.get_watched_wallets(user.get('user_id') or user.get('id'))
+                if wallets:
+                    user_ids.append(user.get('user_id') or user.get('id'))
+
             logger.info(f"📊 Monitoring {len(user_ids)} users")
-            
+
             for user_id in user_ids:
                 if user_id not in self.active_monitors:
                     task = asyncio.create_task(copy_trader.start_monitoring_for_user(user_id))
                     self.active_monitors[user_id] = task
                     logger.info(f"✅ Started monitoring for user {user_id}")
-        
+
         except Exception as e:
             logger.error(f"Error starting monitors: {e}")
     
@@ -52,23 +53,21 @@ class WalletMonitor:
         """Main monitoring loop"""
         try:
             await self.start_all_monitors()
-            
+
             # Keep monitors running
             while True:
                 await asyncio.sleep(60)
-                
-                # Check for new users
-                conn = db.get_connection()
-                cursor = conn.cursor()
-                cursor.execute('SELECT DISTINCT user_id FROM watched_wallets WHERE is_active = 1')
-                user_ids = [row[0] for row in cursor.fetchall()]
-                conn.close()
-                
-                for user_id in user_ids:
+
+                # Check for new users periodically using db abstraction
+                users = db.get_all_users()
+                for user in (users or []):
+                    user_id = user.get('user_id') or user.get('id')
                     if user_id not in self.active_monitors:
-                        task = asyncio.create_task(copy_trader.start_monitoring_for_user(user_id))
-                        self.active_monitors[user_id] = task
-        
+                        wallets = db.get_watched_wallets(user_id)
+                        if wallets:
+                            task = asyncio.create_task(copy_trader.start_monitoring_for_user(user_id))
+                            self.active_monitors[user_id] = task
+
         except asyncio.CancelledError:
             logger.info("Wallet monitor cancelled")
             await self.stop_all_monitors()
