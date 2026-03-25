@@ -94,7 +94,7 @@ class DEXSwapper:
             logger.warning(f"Priority fee fetch failed: {e}")
         return DEFAULT_PRIORITY_FEE_FLOOR
 
-    # ------------------------------------------------------------------
+    #------------------------------------------------------------------
     # Swap execution (real on-chain)
     # ------------------------------------------------------------------
 
