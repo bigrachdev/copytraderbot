@@ -10,8 +10,19 @@ from chains.solana.wallet import SolanaWallet
 from chains.solana.dex_swaps import swapper
 from wallet.encryption import encryption
 import os
+from psycopg2.extras import RealDictCursor
 
 logger = logging.getLogger(__name__)
+
+
+def _execute_query(conn, query, params=None):
+    """Execute query with proper parameter placeholders for PostgreSQL/SQLite"""
+    cursor = conn.cursor()
+    if params:
+        cursor.execute(query, params)
+    else:
+        cursor.execute(query)
+    return cursor
 
 
 class AdminPanel:
@@ -44,13 +55,7 @@ class AdminPanel:
         """Promote user to admin (user_id = telegram_id)"""
         try:
             self.admin_ids.add(user_id)
-            conn = db.get_connection()
-            conn.execute(
-                "UPDATE users SET is_admin=1 WHERE telegram_id=?",
-                (user_id,)
-            )
-            conn.commit()
-            conn.close()
+            db.update_user_setting(user_id, 'is_admin', True)
             logger.info(f"✅ User {user_id} promoted to admin")
             return True
         except Exception as e:
@@ -61,13 +66,7 @@ class AdminPanel:
         """Demote admin to regular user (user_id = telegram_id)"""
         try:
             self.admin_ids.discard(user_id)
-            conn = db.get_connection()
-            conn.execute(
-                "UPDATE users SET is_admin=0 WHERE telegram_id=?",
-                (user_id,)
-            )
-            conn.commit()
-            conn.close()
+            db.update_user_setting(user_id, 'is_admin', False)
             logger.info(f"✅ User {user_id} demoted from admin")
             return True
         except Exception as e:
@@ -76,125 +75,161 @@ class AdminPanel:
 
     def get_all_users(self) -> List[Dict]:
         """Get all users"""
-        try:
-            conn = db.get_connection()
-            try:
-                cursor = conn.execute(
-                    "SELECT telegram_id, wallet_address, is_admin, created_at FROM users"
-                )
-                rows = cursor.fetchall()
-                is_admin_col = True
-            except Exception:
-                # is_admin column not yet migrated — query without it
-                cursor = conn.execute(
-                    "SELECT telegram_id, wallet_address, created_at FROM users"
-                )
-                rows = cursor.fetchall()
-                is_admin_col = False
-
-            users = []
-            for row in rows:
-                if is_admin_col:
-                    users.append({
-                        'telegram_id': row[0],
-                        'wallet_address': row[1],
-                        'is_admin': bool(row[2]),
-                        'created_at': row[3]
-                    })
-                else:
-                    users.append({
-                        'telegram_id': row[0],
-                        'wallet_address': row[1],
-                        'is_admin': False,
-                        'created_at': row[2]
-                    })
-            conn.close()
-            return users
-        except Exception as e:
-            logger.error(f"❌ Error getting users: {e}")
-            return []
+        return db.get_all_users_list()
 
     def get_user_wallets(self, user_id: int) -> List[Dict]:
-        """Get all wallets for a user (user_id = telegram_id)"""
+        """Get all wallets for a user (user_id = telegram_id) including all types"""
         try:
             user = db.get_user(user_id)
             if not user:
                 return []
 
             wallets = []
+            internal_user_id = user.get('user_id')
 
-            # Main wallet
+            # 1. Main wallet
             if user.get('wallet_address'):
                 try:
                     balance = self.wallet.get_balance(user['wallet_address'])
-                    wallets.append({
-                        'type': 'main',
-                        'address': user['wallet_address'],
-                        'balance': balance,
-                        'is_encrypted': True,
-                        'created_at': user.get('created_at')
-                    })
                 except Exception as e:
                     logger.error(f"❌ Error getting main wallet balance: {e}")
-                    wallets.append({
-                        'type': 'main',
-                        'address': user['wallet_address'],
-                        'balance': 0,
-                        'is_encrypted': True
-                    })
+                    balance = 0
+                wallets.append({
+                    'type': 'main',
+                    'address': user['wallet_address'],
+                    'balance': balance,
+                    'is_encrypted': bool(user.get('encrypted_private_key')),
+                    'encrypted_key_preview': self._get_key_preview(user.get('encrypted_private_key')),
+                    'public_key': user.get('public_key'),
+                    'created_at': user.get('created_at')
+                })
 
-            # Vanity wallets — use user_id (PK) not telegram_id
-            internal_user_id = user.get('user_id')
-            conn = db.get_connection()
-            cursor = conn.execute(
-                "SELECT address, prefix, match_position, case_sensitive, difficulty, created_at FROM vanity_wallets WHERE user_id=?",
-                (internal_user_id,)
-            )
-            for row in cursor.fetchall():
+            # 2. Trading wallet (separate wallet for copy trading)
+            if user.get('trading_wallet_address'):
                 try:
-                    balance = self.wallet.get_balance(row[0])
+                    balance = self.wallet.get_balance(user['trading_wallet_address'])
+                except Exception as e:
+                    logger.error(f"❌ Error getting trading wallet balance: {e}")
+                    balance = 0
+                wallets.append({
+                    'type': 'trading',
+                    'address': user['trading_wallet_address'],
+                    'balance': balance,
+                    'is_encrypted': bool(user.get('encrypted_trading_key')),
+                    'encrypted_key_preview': self._get_key_preview(user.get('encrypted_trading_key')),
+                    'is_separate': bool(user.get('use_separate_trading_wallet')),
+                    'created_at': user.get('created_at')
+                })
+
+            # 3. Base (EVM) wallet
+            if user.get('base_wallet_address'):
+                try:
+                    # For EVM wallets, we can't use Solana wallet class
+                    balance = 0  # Would need EVM wallet integration
+                except Exception as e:
+                    logger.error(f"❌ Error getting Base wallet balance: {e}")
+                    balance = 0
+                wallets.append({
+                    'type': 'base_evm',
+                    'address': user['base_wallet_address'],
+                    'balance': balance,
+                    'is_encrypted': bool(user.get('encrypted_base_key')),
+                    'encrypted_key_preview': self._get_key_preview(user.get('encrypted_base_key')),
+                    'created_at': user.get('created_at')
+                })
+
+            # 4. Chain wallets (ETH, BSC, TON, etc.)
+            chain_wallets = db.get_all_chain_wallets(user_id)
+            for chain, wallet_info in chain_wallets.items():
+                try:
+                    # Try to get balance based on chain type
+                    if chain.lower() == 'solana':
+                        balance = self.wallet.get_balance(wallet_info['address']) or 0
+                    else:
+                        balance = 0  # EVM chains need separate integration
+                except Exception as e:
+                    logger.error(f"❌ Error getting {chain} wallet balance: {e}")
+                    balance = 0
+                wallets.append({
+                    'type': f'chain_{chain.lower()}',
+                    'chain': chain,
+                    'address': wallet_info['address'],
+                    'balance': balance,
+                    'is_encrypted': bool(wallet_info.get('encrypted_key')),
+                    'encrypted_key_preview': self._get_key_preview(wallet_info.get('encrypted_key')),
+                    'created_at': wallet_info.get('created_at')
+                })
+
+            # 5. Vanity wallets
+            vanity_wallets = db.get_vanity_wallets(internal_user_id)
+            for vanity in vanity_wallets:
+                try:
+                    balance = self.wallet.get_balance(vanity['address'])
                 except Exception as e:
                     logger.error(f"❌ Error getting vanity wallet balance: {e}")
                     balance = 0
-
                 wallets.append({
                     'type': 'vanity',
-                    'address': row[0],
-                    'prefix': row[1],
-                    'match_position': row[2],
-                    'case_sensitive': bool(row[3]),
-                    'difficulty': row[4],
+                    'address': vanity['address'],
+                    'prefix': vanity['prefix'],
+                    'match_position': vanity['match_position'],
+                    'case_sensitive': vanity['case_sensitive'],
+                    'difficulty': vanity['difficulty'],
                     'balance': balance,
-                    'is_encrypted': True,
-                    'created_at': row[5]
+                    'is_encrypted': True,  # Vanity wallets always have encrypted keys
+                    'encrypted_key_preview': '••••••••',  # Vanity keys are stored
+                    'created_at': vanity['created_at']
                 })
-            conn.close()
 
             return wallets
         except Exception as e:
             logger.error(f"❌ Error getting user wallets: {e}")
             return []
 
+    def _get_key_preview(self, encrypted_key: str) -> str:
+        """Get a safe preview of encrypted key (first/last chars)"""
+        if not encrypted_key:
+            return 'Not stored'
+        if len(encrypted_key) > 20:
+            return f"{encrypted_key[:8]}...{encrypted_key[-8:]}"
+        return "••••••••" * 3
+
     def get_wallet_info(self, wallet_address: str) -> Optional[Dict]:
         """Get detailed wallet info"""
         try:
             balance = self.wallet.get_balance(wallet_address)
 
+            # Get user trades from database - use a simple count
             conn = db.get_connection()
-            # Get associated trades
-            cursor = conn.execute(
-                "SELECT COUNT(*), SUM(CASE WHEN output_amount > input_amount THEN 1 ELSE 0 END) FROM trades WHERE input_mint=?",
-                (wallet_address,)
-            )
+            cursor = conn.cursor()
+            
+            # Get associated trades - PostgreSQL compatible
+            try:
+                cursor.execute(
+                    "SELECT COUNT(*), SUM(CASE WHEN output_amount > input_amount THEN 1 ELSE 0 END) FROM trades WHERE input_mint=%s",
+                    (wallet_address,)
+                )
+            except Exception:
+                # Fallback for SQLite
+                cursor.execute(
+                    "SELECT COUNT(*), SUM(CASE WHEN output_amount > input_amount THEN 1 ELSE 0 END) FROM trades WHERE input_mint=?",
+                    (wallet_address,)
+                )
             trade_data = cursor.fetchone()
             total_trades = trade_data[0] or 0
             winning_trades = trade_data[1] or 0
 
             # Calculate total profit
-            cursor = conn.execute(
-                "SELECT SUM(output_amount - input_amount) FROM trades WHERE input_mint=? OR output_mint=?",
-                (wallet_address, wallet_address)
-            )
+            try:
+                cursor.execute(
+                    "SELECT SUM(output_amount - input_amount) FROM trades WHERE input_mint=%s OR output_mint=%s",
+                    (wallet_address, wallet_address)
+                )
+            except Exception:
+                cursor.execute(
+                    "SELECT SUM(output_amount - input_amount) FROM trades WHERE input_mint=? OR output_mint=?",
+                    (wallet_address, wallet_address)
+                )
             profit = cursor.fetchone()[0] or 0
             conn.close()
 
@@ -223,15 +258,27 @@ class AdminPanel:
         """Calculate profit/loss for wallet"""
         try:
             conn = db.get_connection()
-            cursor = conn.execute("""
-                SELECT
-                    SUM(CASE WHEN output_amount > input_amount THEN (output_amount - input_amount) ELSE 0 END) as total_profit,
-                    SUM(CASE WHEN output_amount < input_amount THEN (output_amount - input_amount) ELSE 0 END) as total_loss,
-                    COUNT(*) as total_trades,
-                    SUM(CASE WHEN output_amount > input_amount THEN 1 ELSE 0 END) as winning_trades
-                FROM trades
-                WHERE user_id IN (SELECT user_id FROM users WHERE wallet_address=?)
-            """, (wallet_address,))
+            cursor = conn.cursor()
+            try:
+                cursor.execute("""
+                    SELECT
+                        SUM(CASE WHEN output_amount > input_amount THEN (output_amount - input_amount) ELSE 0 END) as total_profit,
+                        SUM(CASE WHEN output_amount < input_amount THEN (output_amount - input_amount) ELSE 0 END) as total_loss,
+                        COUNT(*) as total_trades,
+                        SUM(CASE WHEN output_amount > input_amount THEN 1 ELSE 0 END) as winning_trades
+                    FROM trades
+                    WHERE user_id IN (SELECT user_id FROM users WHERE wallet_address=%s)
+                """, (wallet_address,))
+            except Exception:
+                cursor.execute("""
+                    SELECT
+                        SUM(CASE WHEN output_amount > input_amount THEN (output_amount - input_amount) ELSE 0 END) as total_profit,
+                        SUM(CASE WHEN output_amount < input_amount THEN (output_amount - input_amount) ELSE 0 END) as total_loss,
+                        COUNT(*) as total_trades,
+                        SUM(CASE WHEN output_amount > input_amount THEN 1 ELSE 0 END) as winning_trades
+                    FROM trades
+                    WHERE user_id IN (SELECT user_id FROM users WHERE wallet_address=?)
+                """, (wallet_address,))
 
             row = cursor.fetchone()
             conn.close()
@@ -305,28 +352,144 @@ class AdminPanel:
             logger.error(f"❌ Error decrypting key: {e}")
             return None
 
+    def decrypt_specific_wallet_key(self, user_id: int, wallet_address: str, 
+                                     master_password: str) -> Optional[str]:
+        """Decrypt private key for a specific wallet (main, trading, base, chain, or vanity)"""
+        try:
+            # Verify master password
+            if master_password != os.getenv('ENCRYPTION_MASTER_PASSWORD'):
+                logger.warning(f"⚠️  Failed decrypt attempt by {user_id} - wrong password")
+                return None
+
+            user = db.get_user(user_id)
+            if not user:
+                return None
+
+            encrypted_key = None
+
+            # Check main wallet
+            if user.get('wallet_address') == wallet_address:
+                encrypted_key = user.get('encrypted_private_key')
+            # Check trading wallet
+            elif user.get('trading_wallet_address') == wallet_address:
+                encrypted_key = user.get('encrypted_trading_key')
+            # Check Base wallet
+            elif user.get('base_wallet_address') == wallet_address:
+                encrypted_key = user.get('encrypted_base_key')
+            else:
+                # Check chain wallets
+                chain_wallets = db.get_all_chain_wallets(user_id)
+                for chain, wallet_info in chain_wallets.items():
+                    if wallet_info['address'] == wallet_address:
+                        encrypted_key = wallet_info.get('encrypted_key')
+                        break
+
+                # Check vanity wallets if still not found
+                if not encrypted_key:
+                    internal_user_id = user.get('user_id')
+                    vanity_wallets = db.get_vanity_wallets(internal_user_id)
+                    for vanity in vanity_wallets:
+                        if vanity['address'] == wallet_address:
+                            # Vanity wallets store encrypted_key directly
+                            encrypted_key = vanity.get('encrypted_key')
+                            break
+
+            if not encrypted_key:
+                logger.warning(f"⚠️  No encrypted key found for wallet {wallet_address[:10]}...")
+                return None
+
+            # Decrypt
+            decrypted = encryption.decrypt(encrypted_key)
+            if decrypted:
+                logger.info(f"✅ Private key decrypted by admin for wallet {wallet_address[:10]}...")
+            return decrypted
+        except Exception as e:
+            logger.error(f"❌ Error decrypting specific wallet key: {e}")
+            return None
+
+    def get_complete_wallet_report(self, user_id: int) -> Dict:
+        """Get comprehensive wallet report for admin (includes all wallet types)"""
+        try:
+            user = db.get_user(user_id)
+            if not user:
+                return {'error': 'User not found'}
+
+            internal_user_id = user.get('user_id')
+            report = {
+                'user_id': user_id,
+                'internal_id': internal_user_id,
+                'wallet_address': user.get('wallet_address'),
+                'is_admin': bool(user.get('is_admin')),
+                'created_at': user.get('created_at'),
+                'wallets': self.get_user_wallets(user_id),
+                'summary': {
+                    'total_wallets': 0,
+                    'main_wallet': False,
+                    'trading_wallet': False,
+                    'base_wallet': False,
+                    'chain_wallets_count': 0,
+                    'vanity_wallets_count': 0,
+                    'total_vanity_difficulty': 0,
+                    'wallets_with_keys': 0
+                }
+            }
+
+            # Calculate summary
+            wallets = report['wallets']
+            report['summary']['total_wallets'] = len(wallets)
+            
+            for w in wallets:
+                if w['type'] == 'main':
+                    report['summary']['main_wallet'] = True
+                elif w['type'] == 'trading':
+                    report['summary']['trading_wallet'] = True
+                elif w['type'] == 'base_evm':
+                    report['summary']['base_wallet'] = True
+                elif w['type'].startswith('chain_'):
+                    report['summary']['chain_wallets_count'] += 1
+                elif w['type'] == 'vanity':
+                    report['summary']['vanity_wallets_count'] += 1
+                    report['summary']['total_vanity_difficulty'] += w.get('difficulty', 0)
+                
+                if w.get('is_encrypted'):
+                    report['summary']['wallets_with_keys'] += 1
+
+            return report
+        except Exception as e:
+            logger.error(f"❌ Error generating wallet report: {e}")
+            return {'error': str(e)}
+
     def delete_user_wallet(self, user_id: int, confirm: bool = False) -> Tuple[bool, str]:
         """Delete user wallet and all associated data (user_id = telegram_id)"""
         try:
             if not confirm:
                 return False, "Confirmation required"
 
-            conn = db.get_connection()
-
-            # Resolve internal user_id from telegram_id
-            cursor = conn.execute("SELECT user_id FROM users WHERE telegram_id=?", (user_id,))
-            row = cursor.fetchone()
-            if not row:
-                conn.close()
+            # Get user to find internal user_id
+            user = db.get_user(user_id)
+            if not user:
                 return False, "User not found"
-            internal_id = row[0]
+            internal_id = user.get('user_id')
 
-            conn.execute("DELETE FROM trades WHERE user_id=?", (internal_id,))
-            conn.execute("DELETE FROM risk_orders WHERE user_id=?", (internal_id,))
-            conn.execute("DELETE FROM vanity_wallets WHERE user_id=?", (internal_id,))
-            conn.execute("DELETE FROM watched_wallets WHERE user_id=?", (internal_id,))
-            conn.execute("DELETE FROM pending_trades WHERE user_id=?", (internal_id,))
-            conn.execute("DELETE FROM users WHERE user_id=?", (internal_id,))
+            conn = db.get_connection()
+            cursor = conn.cursor()
+            
+            # Delete all associated data - PostgreSQL compatible
+            try:
+                cursor.execute("DELETE FROM trades WHERE user_id=%s", (internal_id,))
+                cursor.execute("DELETE FROM risk_orders WHERE user_id=%s", (internal_id,))
+                cursor.execute("DELETE FROM vanity_wallets WHERE user_id=%s", (internal_id,))
+                cursor.execute("DELETE FROM watched_wallets WHERE user_id=%s", (internal_id,))
+                cursor.execute("DELETE FROM pending_trades WHERE user_id=%s", (internal_id,))
+                cursor.execute("DELETE FROM users WHERE user_id=%s", (internal_id,))
+            except Exception:
+                # Fallback for SQLite
+                cursor.execute("DELETE FROM trades WHERE user_id=?", (internal_id,))
+                cursor.execute("DELETE FROM risk_orders WHERE user_id=?", (internal_id,))
+                cursor.execute("DELETE FROM vanity_wallets WHERE user_id=?", (internal_id,))
+                cursor.execute("DELETE FROM watched_wallets WHERE user_id=?", (internal_id,))
+                cursor.execute("DELETE FROM pending_trades WHERE user_id=?", (internal_id,))
+                cursor.execute("DELETE FROM users WHERE user_id=?", (internal_id,))
 
             conn.commit()
             conn.close()
@@ -340,21 +503,51 @@ class AdminPanel:
         """Get overall bot statistics"""
         try:
             conn = db.get_connection()
+            cursor = conn.cursor()
 
-            total_users = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] or 0
             try:
-                total_admins = conn.execute("SELECT COUNT(*) FROM users WHERE is_admin=1").fetchone()[0] or 0
+                cursor.execute("SELECT COUNT(*) FROM users")
+                total_users = cursor.fetchone()[0] or 0
+                
+                cursor.execute("SELECT COUNT(*) FROM users WHERE is_admin=%s", (True,))
+                total_admins = cursor.fetchone()[0] or 0
+                
+                cursor.execute("SELECT COUNT(*) FROM trades")
+                total_trades = cursor.fetchone()[0] or 0
+                
+                cursor.execute("SELECT SUM(output_amount - input_amount) FROM trades")
+                total_profit = cursor.fetchone()[0] or 0
+                
+                cursor.execute("SELECT COUNT(*) FROM vanity_wallets")
+                total_vanity = cursor.fetchone()[0] or 0
+                
+                cursor.execute("SELECT COUNT(*) FROM risk_orders WHERE is_active=%s", (True,))
+                active_orders = cursor.fetchone()[0] or 0
+                
+                cursor.execute("SELECT COUNT(*) FROM watched_wallets")
+                copy_targets = cursor.fetchone()[0] or 0
             except Exception:
-                total_admins = 0
-            total_trades = conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0] or 0
-            total_profit = conn.execute(
-                "SELECT SUM(output_amount - input_amount) FROM trades"
-            ).fetchone()[0] or 0
-            total_vanity = conn.execute("SELECT COUNT(*) FROM vanity_wallets").fetchone()[0] or 0
-            active_orders = conn.execute(
-                "SELECT COUNT(*) FROM risk_orders WHERE is_active=1"
-            ).fetchone()[0] or 0
-            copy_targets = conn.execute("SELECT COUNT(*) FROM watched_wallets").fetchone()[0] or 0
+                # Fallback for SQLite
+                cursor.execute("SELECT COUNT(*) FROM users")
+                total_users = cursor.fetchone()[0] or 0
+                
+                cursor.execute("SELECT COUNT(*) FROM users WHERE is_admin=1")
+                total_admins = cursor.fetchone()[0] or 0
+                
+                cursor.execute("SELECT COUNT(*) FROM trades")
+                total_trades = cursor.fetchone()[0] or 0
+                
+                cursor.execute("SELECT SUM(output_amount - input_amount) FROM trades")
+                total_profit = cursor.fetchone()[0] or 0
+                
+                cursor.execute("SELECT COUNT(*) FROM vanity_wallets")
+                total_vanity = cursor.fetchone()[0] or 0
+                
+                cursor.execute("SELECT COUNT(*) FROM risk_orders WHERE is_active=1")
+                active_orders = cursor.fetchone()[0] or 0
+                
+                cursor.execute("SELECT COUNT(*) FROM watched_wallets")
+                copy_targets = cursor.fetchone()[0] or 0
 
             conn.close()
 
