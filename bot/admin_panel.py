@@ -10,7 +10,7 @@ from chains.solana.wallet import SolanaWallet
 from chains.solana.dex_swaps import swapper
 from wallet.encryption import encryption
 import os
-from psycopg2.extras import RealDictCursor
+from psycopg.rows import dict_row
 
 logger = logging.getLogger(__name__)
 

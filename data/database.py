@@ -2,8 +2,8 @@
 Database layer for managing users, wallets, and trade history
 Using PostgreSQL (Neon)
 """
-import psycopg2
-from psycopg2.extras import RealDictCursor
+import psycopg
+from psycopg.rows import dict_row
 import json
 import logging
 from datetime import datetime
@@ -27,7 +27,7 @@ class Database:
     def get_connection(self):
         """Get database connection"""
         if self.use_postgres:
-            conn = psycopg2.connect(self.db_url)
+            conn = psycopg.connect(self.db_url, row_factory=dict_row)
             return conn
         else:
             import sqlite3
@@ -525,7 +525,7 @@ class Database:
     def get_user(self, telegram_id: int) -> Optional[Dict]:
         """Get user by telegram ID"""
         conn = self.get_connection()
-        cursor = conn.cursor(cursor_factory=RealDictCursor if self.use_postgres else None)
+        cursor = conn.cursor()
         if self.use_postgres:
             cursor.execute('SELECT * FROM users WHERE telegram_id = %s', (telegram_id,))
         else:
@@ -659,7 +659,7 @@ class Database:
     def get_watched_wallets(self, user_id: int) -> List[Dict]:
         """Get all watched wallets for user"""
         conn = self.get_connection()
-        cursor = conn.cursor(cursor_factory=RealDictCursor if self.use_postgres else None)
+        cursor = conn.cursor()
         if self.use_postgres:
             cursor.execute('''
                 SELECT * FROM watched_wallets WHERE user_id = %s AND is_active = TRUE
@@ -720,7 +720,7 @@ class Database:
     def get_user_trades(self, user_id: int, limit: int = 20) -> List[Dict]:
         """Get recent trades for user"""
         conn = self.get_connection()
-        cursor = conn.cursor(cursor_factory=RealDictCursor if self.use_postgres else None)
+        cursor = conn.cursor()
         if self.use_postgres:
             cursor.execute('''
                 SELECT * FROM trades WHERE user_id = %s
@@ -738,7 +738,7 @@ class Database:
     def get_user_stats(self, user_id: int) -> Dict:
         """Get trading statistics"""
         conn = self.get_connection()
-        cursor = conn.cursor(cursor_factory=RealDictCursor if self.use_postgres else None)
+        cursor = conn.cursor()
 
         if self.use_postgres:
             cursor.execute('SELECT COUNT(*) as total FROM trades WHERE user_id = %s', (user_id,))
@@ -804,7 +804,7 @@ class Database:
     def get_active_risk_orders(self, user_id: int) -> List[Dict]:
         """Get active risk orders"""
         conn = self.get_connection()
-        cursor = conn.cursor(cursor_factory=RealDictCursor if self.use_postgres else None)
+        cursor = conn.cursor()
         if self.use_postgres:
             cursor.execute('''
                 SELECT * FROM risk_orders WHERE user_id = %s AND is_active = TRUE
@@ -861,7 +861,7 @@ class Database:
     def get_vanity_wallets(self, user_id: int) -> List[Dict]:
         """Get all vanity wallets for user"""
         conn = self.get_connection()
-        cursor = conn.cursor(cursor_factory=RealDictCursor if self.use_postgres else None)
+        cursor = conn.cursor()
         if self.use_postgres:
             cursor.execute('''
                 SELECT id, address, prefix, match_position, case_sensitive, difficulty, created_at FROM vanity_wallets WHERE user_id = %s
@@ -916,7 +916,7 @@ class Database:
         """Get all users with minimal info"""
         try:
             conn = self.get_connection()
-            cursor = conn.cursor(cursor_factory=RealDictCursor if self.use_postgres else None)
+            cursor = conn.cursor()
             if self.use_postgres:
                 cursor.execute('''
                     SELECT user_id, telegram_id, wallet_address, is_admin, created_at FROM users
@@ -1024,7 +1024,7 @@ class Database:
         """Get pending trade for token"""
         try:
             conn = self.get_connection()
-            cursor = conn.cursor(cursor_factory=RealDictCursor if self.use_postgres else None)
+            cursor = conn.cursor()
             if self.use_postgres:
                 cursor.execute('''
                     SELECT * FROM smart_trades
@@ -1270,7 +1270,7 @@ class Database:
         """Get recent smart trades for user"""
         try:
             conn = self.get_connection()
-            cursor = conn.cursor(cursor_factory=RealDictCursor if self.use_postgres else None)
+            cursor = conn.cursor()
             if self.use_postgres:
                 cursor.execute('''
                     SELECT * FROM smart_trades
@@ -1656,7 +1656,7 @@ class Database:
         """Return all open positions for a user."""
         try:
             conn = self.get_connection()
-            cursor = conn.cursor(cursor_factory=RealDictCursor if self.use_postgres else None)
+            cursor = conn.cursor()
 
             if self.use_postgres:
                 cursor.execute('''
@@ -1741,7 +1741,7 @@ class Database:
         """Return list of active auto-traders."""
         try:
             conn = self.get_connection()
-            cursor = conn.cursor(cursor_factory=RealDictCursor if self.use_postgres else None)
+            cursor = conn.cursor()
             if self.use_postgres:
                 cursor.execute('''
                     SELECT user_id, trade_percent, max_trades_per_cycle
@@ -1797,7 +1797,7 @@ class Database:
         """Return all users who have auto-smart trading enabled."""
         try:
             conn = self.get_connection()
-            cursor = conn.cursor(cursor_factory=RealDictCursor if self.use_postgres else None)
+            cursor = conn.cursor()
             if self.use_postgres:
                 cursor.execute('''
                     SELECT user_id, trade_percent, max_positions
@@ -1821,7 +1821,7 @@ class Database:
         """Get the most recent open copy position for a user+token."""
         try:
             conn = self.get_connection()
-            cursor = conn.cursor(cursor_factory=RealDictCursor if self.use_postgres else None)
+            cursor = conn.cursor()
             if self.use_postgres:
                 cursor.execute('''
                     SELECT * FROM copy_performance
@@ -1846,7 +1846,7 @@ class Database:
         """Get copy trade performance history."""
         try:
             conn = self.get_connection()
-            cursor = conn.cursor(cursor_factory=RealDictCursor if self.use_postgres else None)
+            cursor = conn.cursor()
             if watched_wallet:
                 if self.use_postgres:
                     cursor.execute('''
