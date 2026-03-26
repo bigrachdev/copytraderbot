@@ -30,6 +30,7 @@ from chains.solana.wallet import SolanaWallet
 from chains.solana.dex_swaps import swapper
 from utils.notifications import notification_engine
 from trading.token_analyzer import token_analyzer
+from trading.enhanced_features import enhanced_features
 from config import (
     WSOL_MINT, BIRDEYE_API_KEY,
     SMART_MIN_TRADE_SOL, SMART_MAX_OPEN_POSITIONS, SMART_MAX_PCT_PER_TOKEN,
@@ -43,6 +44,11 @@ from config import (
     SMART_DEFAULT_MAX_POSITIONS, SMART_DEFAULT_TRADE_PCT,
     DEXSCREENER_BOOSTED_URL, DEXSCREENER_SEARCH_URL, DEXSCREENER_NEW_URL,
     BIRDEYE_TRENDING_URL, BIRDEYE_NEW_TOKENS_URL,
+    ENABLE_TP_LADDER_OPT, TP_LADDER_VOLATILITY_ADJ, TP_BREAKEVEN_AFTER_TP1,
+    ENABLE_REBUY_ENHANCED, REBUY_MAX_PER_TOKEN, REBUY_PROFIT_REDUCTION,
+    ENABLE_DAILY_LOSS_LIMIT, ENABLE_COOL_OFF_PERIOD, DAILY_LOSS_LIMIT_PCT,
+    COOL_OFF_LOSSES, COOL_OFF_MINUTES,
+    ENABLE_TOKEN_DISCOVERY_PLUS,
 )
 
 logger = logging.getLogger(__name__)

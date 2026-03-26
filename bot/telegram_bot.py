@@ -282,7 +282,7 @@ class TelegramBot:
             if update.callback_query:
                 await self.show_main_menu(update, context)
             elif update.message:
-                await update.message.reply_text("🤖 **Main Menu**\n\nSelect an option below:",
+                await update.message.reply_text("🤖 **Main Menu**\n\n",
                                                 parse_mode='Markdown')
                 await self.show_main_menu(update, context)
             return MENU
@@ -2150,6 +2150,8 @@ class TelegramBot:
             [InlineKeyboardButton("🎯 Smart Trade Settings", callback_data="st_settings")],
             [InlineKeyboardButton("📊 Change Trade %", callback_data="smart_trade")],
             [InlineKeyboardButton("💱 Slippage Tolerance", callback_data="slippage_settings")],
+            [InlineKeyboardButton("⚡ Enhanced Features", callback_data="enhanced_features")],
+            [InlineKeyboardButton("❓ FAQ & How-To", callback_data="faq_howto")],
             [InlineKeyboardButton("🔑 View Private Key", callback_data="view_private_key")],
             [InlineKeyboardButton("🔑 Import Wallet", callback_data="import_key")],
             [InlineKeyboardButton("📥 My Addresses (Receive)", callback_data="receive")],
@@ -2442,6 +2444,304 @@ class TelegramBot:
                 [InlineKeyboardButton("🎯 Back to Smart Settings", callback_data="st_settings")],
                 [InlineKeyboardButton("🔙 Main Menu", callback_data="back_menu")],
             ]),
+            parse_mode='Markdown'
+        )
+        return MENU
+
+    # ── Enhanced Features Menu ─────────────────────────────────────────────────
+
+    async def enhanced_features_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Enhanced Features settings menu with toggles."""
+        await update.callback_query.answer()
+        user_id = update.effective_user.id
+
+        # Get current toggle states (default from config)
+        toggles = {
+            'enable_dynamic_copy_scale': db.get_user_setting(user_id, 'enable_dynamic_copy_scale', True),
+            'enable_enhanced_whale_qual': db.get_user_setting(user_id, 'enable_enhanced_whale_qual', True),
+            'enable_latency_optimization': db.get_user_setting(user_id, 'enable_latency_optimization', True),
+            'enable_signal_aggregation': db.get_user_setting(user_id, 'enable_signal_aggregation', True),
+            'enable_kelly_sizing': db.get_user_setting(user_id, 'enable_kelly_sizing', False),
+            'enable_tp_volatility_adj': db.get_user_setting(user_id, 'enable_tp_volatility_adj', True),
+            'enable_enhanced_rebuy': db.get_user_setting(user_id, 'enable_enhanced_rebuy', False),
+            'enable_daily_loss_limit': db.get_user_setting(user_id, 'enable_daily_loss_limit', False),
+            'enable_cool_off_period': db.get_user_setting(user_id, 'enable_cool_off_period', False),
+            'enable_jito_protection': db.get_user_setting(user_id, 'enable_jito_protection', False),
+            'enable_rugcheck_filter': db.get_user_setting(user_id, 'enable_rugcheck_filter', False),
+        }
+
+        def toggle_icon(enabled: bool) -> str:
+            return "✅" if enabled else "⬜"
+
+        text = (
+            "⚡ **Enhanced Features**\n\n"
+            "Advanced improvements for better trading results.\n"
+            "First 4 features are **ON** by default.\n\n"
+            "**🐋 Copy Trade Enhancements:**\n"
+            f"{toggle_icon(toggles['enable_dynamic_copy_scale'])} Dynamic Copy Scale\n"
+            f"{toggle_icon(toggles['enable_enhanced_whale_qual'])} Enhanced Whale Qual (Sharpe/Drawdown)\n"
+            f"{toggle_icon(toggles['enable_latency_optimization'])} Latency Optimization\n"
+            f"{toggle_icon(toggles['enable_signal_aggregation'])} Signal Aggregation+\n\n"
+            "**🧠 Smart Trade Enhancements:**\n"
+            f"{toggle_icon(toggles['enable_kelly_sizing'])} Kelly Criterion Sizing\n"
+            f"{toggle_icon(toggles['enable_tp_volatility_adj'])} TP Ladder Optimization\n"
+            f"{toggle_icon(toggles['enable_enhanced_rebuy'])} Enhanced Auto-Rebuy\n\n"
+            "**🛡️ Risk Management:**\n"
+            f"{toggle_icon(toggles['enable_daily_loss_limit'])} Daily Loss Limit (-10%)\n"
+            f"{toggle_icon(toggles['enable_cool_off_period'])} Cool-Off Period (3 losses)\n\n"
+            "**🔒 Protection:**\n"
+            f"{toggle_icon(toggles['enable_jito_protection'])} Jito MEV Protection (>5 SOL)\n"
+            f"{toggle_icon(toggles['enable_rugcheck_filter'])} RugCheck Filter\n\n"
+            "Tap a feature to toggle it ON/OFF.\n"
+            "Tap ❓ for details."
+        )
+
+        keyboard = [
+            [InlineKeyboardButton(f"{toggle_icon(toggles['enable_dynamic_copy_scale'])} Dynamic Copy Scale",
+                                  callback_data="ef_toggle_enable_dynamic_copy_scale")],
+            [InlineKeyboardButton(f"{toggle_icon(toggles['enable_enhanced_whale_qual'])} Enhanced Whale Qual",
+                                  callback_data="ef_toggle_enable_enhanced_whale_qual")],
+            [InlineKeyboardButton(f"{toggle_icon(toggles['enable_latency_optimization'])} Latency Optimization",
+                                  callback_data="ef_toggle_enable_latency_optimization")],
+            [InlineKeyboardButton(f"{toggle_icon(toggles['enable_signal_aggregation'])} Signal Aggregation+",
+                                  callback_data="ef_toggle_enable_signal_aggregation")],
+            [InlineKeyboardButton(f"{toggle_icon(toggles['enable_kelly_sizing'])} Kelly Criterion",
+                                  callback_data="ef_toggle_enable_kelly_sizing")],
+            [InlineKeyboardButton(f"{toggle_icon(toggles['enable_tp_volatility_adj'])} TP Ladder Opt",
+                                  callback_data="ef_toggle_enable_tp_volatility_adj")],
+            [InlineKeyboardButton(f"{toggle_icon(toggles['enable_enhanced_rebuy'])} Enhanced Rebuy",
+                                  callback_data="ef_toggle_enable_enhanced_rebuy")],
+            [InlineKeyboardButton(f"{toggle_icon(toggles['enable_daily_loss_limit'])} Daily Loss Limit",
+                                  callback_data="ef_toggle_enable_daily_loss_limit")],
+            [InlineKeyboardButton(f"{toggle_icon(toggles['enable_cool_off_period'])} Cool-Off Period",
+                                  callback_data="ef_toggle_enable_cool_off_period")],
+            [InlineKeyboardButton(f"{toggle_icon(toggles['enable_jito_protection'])} Jito Protection",
+                                  callback_data="ef_toggle_enable_jito_protection")],
+            [InlineKeyboardButton(f"{toggle_icon(toggles['enable_rugcheck_filter'])} RugCheck Filter",
+                                  callback_data="ef_toggle_enable_rugcheck_filter")],
+            [InlineKeyboardButton("❓ What do these do?", callback_data="ef_details")],
+            [InlineKeyboardButton("🔙 Back to Settings", callback_data="settings")],
+        ]
+
+        await update.callback_query.edit_message_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
+        )
+        return MENU
+
+    async def enhanced_features_toggle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle enhanced feature toggle."""
+        await update.callback_query.answer()
+        user_id = update.effective_user.id
+        action = update.callback_query.data.replace("ef_toggle_", "")
+
+        # Get current value
+        current = db.get_user_setting(user_id, action, None)
+
+        # Toggle (default True for first 4, False for rest)
+        defaults = {
+            'enable_dynamic_copy_scale': True,
+            'enable_enhanced_whale_qual': True,
+            'enable_latency_optimization': True,
+            'enable_signal_aggregation': True,
+            'enable_kelly_sizing': False,
+            'enable_tp_volatility_adj': True,
+            'enable_enhanced_rebuy': False,
+            'enable_daily_loss_limit': False,
+            'enable_cool_off_period': False,
+            'enable_jito_protection': False,
+            'enable_rugcheck_filter': False,
+        }
+
+        if current is None:
+            current = defaults.get(action, False)
+
+        new_value = not current
+        db.set_user_setting(user_id, action, new_value)
+
+        status = "✅ ON" if new_value else "❌ OFF"
+        feature_name = action.replace('enable_', '').replace('_', ' ').title()
+
+        await update.callback_query.edit_message_text(
+            f"✅ **{feature_name}**\n\nNow: **{status}**\n\n"
+            f"Changes apply to new trades immediately.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 Back to Features", callback_data="enhanced_features")],
+                [InlineKeyboardButton("🔙 Main Menu", callback_data="back_menu")],
+            ]),
+            parse_mode='Markdown'
+        )
+        return MENU
+
+    async def enhanced_features_details_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show details about enhanced features."""
+        await update.callback_query.answer()
+
+        text = (
+            "❓ **Enhanced Features Explained**\n\n"
+            "**🐋 Copy Trade:**\n"
+            "• **Dynamic Copy Scale**: Auto-adjusts position size based on whale win rate\n"
+            "• **Enhanced Whale Qual**: Uses Sharpe ratio & max drawdown for stricter screening\n"
+            "• **Latency Optimization**: Increases slippage when copy latency is high (>30s)\n"
+            "• **Signal Aggregation+**: Performance-weighted multipliers for multi-whale signals\n\n"
+            "**🧠 Smart Trade:**\n"
+            "• **Kelly Criterion**: Mathematical optimal position sizing based on your win rate\n"
+            "• **TP Ladder Opt**: Adjusts take-profit levels based on token volatility\n"
+            "• **Enhanced Rebuy**: Max 2 rebuys/token, reduced cooldown if last trade profitable\n\n"
+            "**🛡️ Risk Management:**\n"
+            "• **Daily Loss Limit**: Stops trading after -10% daily loss\n"
+            "• **Cool-Off Period**: 30min pause after 3 consecutive losses\n\n"
+            "**🔒 Protection:**\n"
+            "• **Jito MEV Protection**: Private transactions for trades >5 SOL (prevents sandwich attacks)\n"
+            "• **RugCheck Filter**: Blocks tokens with RugCheck score <60/100\n\n"
+            "For full details, see FAQ_HOWTO.md or tap individual features to toggle."
+        )
+
+        keyboard = [
+            [InlineKeyboardButton("🔙 Back to Features", callback_data="enhanced_features")],
+            [InlineKeyboardButton("🔙 Main Menu", callback_data="back_menu")],
+        ]
+
+        await update.callback_query.edit_message_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
+        )
+        return MENU
+
+    # ── FAQ & How-To Guide ─────────────────────────────────────────────────────
+
+    async def faq_howto_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show FAQ and How-To-Use guide."""
+        await update.callback_query.answer()
+
+        text = (
+            "❓ **FAQ & How-To-Use Guide**\n\n"
+            "**Quick Start:**\n"
+            "1. Create/Import wallet\n"
+            "2. Fund with SOL\n"
+            "3. Add whale wallets (Copy Trade)\n"
+            "4. Configure settings\n"
+            "5. Enable auto-trade\n\n"
+            "**🐋 Copy Trading:**\n"
+            "• Automatically copies trades from whale wallets\n"
+            "• Use **Find Whales** to discover top traders\n"
+            "• Recommended: Copy scale 0.5x-1.0x, delay 0-30s\n"
+            "• Enhanced features improve whale selection & sizing\n\n"
+            "**🧠 Smart Trading:**\n"
+            "• AI-powered token discovery & analysis\n"
+            "• Scans DexScreener, Birdeye for momentum\n"
+            "• Kelly sizing optimizes position risk\n"
+            "• TP ladder: 25% @ +30%, 50% @ +60%, 100% @ +100%\n\n"
+            "**⚡ Enhanced Features:**\n"
+            "• 12 advanced improvements available\n"
+            "• First 4 ON by default (Copy Trade enhancements)\n"
+            "• Toggle others based on your strategy\n\n"
+            "**🛡️ Risk Management:**\n"
+            "• Never trade more than 20% per position\n"
+            "• Enable daily loss limit (-10%)\n"
+            "• Use stop-loss (-20%) and trailing stop (-15%)\n\n"
+            "**📖 Full Documentation:**\n"
+            "• See FAQ_HOWTO.md for complete guide\n"
+            "• Includes troubleshooting & best practices"
+        )
+
+        keyboard = [
+            [InlineKeyboardButton("🐋 Copy Trading FAQ", callback_data="faq_copy")],
+            [InlineKeyboardButton("🧠 Smart Trading FAQ", callback_data="faq_smart")],
+            [InlineKeyboardButton("⚡ Enhanced Features Guide", callback_data="faq_enhanced")],
+            [InlineKeyboardButton("🛡️ Risk Management Tips", callback_data="faq_risk")],
+            [InlineKeyboardButton("🔙 Back to Settings", callback_data="settings")],
+            [InlineKeyboardButton("🔙 Main Menu", callback_data="back_menu")],
+        ]
+
+        await update.callback_query.edit_message_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
+        )
+        return MENU
+
+    async def faq_subcategory_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show FAQ subcategory details."""
+        await update.callback_query.answer()
+        category = update.callback_query.data.replace("faq_", "")
+
+        faq_content = {
+            'copy': (
+                "🐋 **Copy Trading FAQ**\n\n"
+                "**Q: What is copy trading?**\n"
+                "A: Automatically replicates trades from whale wallets.\n\n"
+                "**Q: How to find good whales?**\n"
+                "A: Look for win rate >50%, 10+ trades, positive avg profit.\n\n"
+                "**Q: What copy scale to use?**\n"
+                "A: Start with 0.5x-1.0x, adjust based on performance.\n\n"
+                "**Q: Why trades rejected?**\n"
+                "A: Token safety filters, high risk score, or low balance.\n\n"
+                "**Q: How does trailing stop work?**\n"
+                "A: Follows price up, sells if drops 15% from peak."
+            ),
+            'smart': (
+                "🧠 **Smart Trading FAQ**\n\n"
+                "**Q: What is smart trading?**\n"
+                "A: AI-powered autonomous token discovery & trading.\n\n"
+                "**Q: How are tokens selected?**\n"
+                "A: Scans DexScreener/Birdeye, scores momentum 0-100.\n\n"
+                "**Q: What momentum score is safe?**\n"
+                "A: 65+ for auto-trade, higher = more risk/reward.\n\n"
+                "**Q: What is Kelly Criterion?**\n"
+                "A: Mathematical optimal position sizing formula.\n\n"
+                "**Q: How does TP ladder work?**\n"
+                "A: Sells 25%@+30%, 50%@+60%, 100%@+100% automatically."
+            ),
+            'enhanced': (
+                "⚡ **Enhanced Features Guide**\n\n"
+                "**Copy Trade (ON by default):**\n"
+                "• Dynamic Copy Scale: Auto-adjusts by whale performance\n"
+                "• Enhanced Whale Qual: Sharpe ratio + drawdown checks\n"
+                "• Latency Optimization: Adjusts slippage for delays\n"
+                "• Signal Aggregation+: Multi-whale performance weighting\n\n"
+                "**Smart Trade (OFF by default):**\n"
+                "• Kelly Criterion: Enable after 10+ trades\n"
+                "• TP Ladder Opt: Earlier exits on volatile tokens\n"
+                "• Enhanced Rebuy: Max 2 rebuys, profit cooldown reduction\n\n"
+                "**Protection (OFF by default):**\n"
+                "• Daily Loss Limit: -10% stop\n"
+                "• Cool-Off: 30min after 3 losses\n"
+                "• Jito MEV: Private TX for >5 SOL trades\n"
+                "• RugCheck: Blocks risky tokens"
+            ),
+            'risk': (
+                "🛡️ **Risk Management Tips**\n\n"
+                "**Position Sizing:**\n"
+                "• Conservative: 5-10% per trade\n"
+                "• Moderate: 10-20% per trade\n"
+                "• Aggressive: 20-30% (experienced only)\n\n"
+                "**Stop Losses:**\n"
+                "• Hard stop: -20% (automatic exit)\n"
+                "• Trailing: -15% from peak (locks profits)\n"
+                "• Time decay: 24h max hold\n\n"
+                "**When to Pause:**\n"
+                "• Hit daily loss limit\n"
+                "• 3+ consecutive losses\n"
+                "• Market crash >10%\n\n"
+                "**Diversification:**\n"
+                "• Max 4-8 open positions\n"
+                "• Max 20% per token"
+            ),
+        }
+
+        text = faq_content.get(category, "FAQ not found.")
+
+        keyboard = [
+            [InlineKeyboardButton("🔙 Back to FAQ", callback_data="faq_howto")],
+            [InlineKeyboardButton("🔙 Main Menu", callback_data="back_menu")],
+        ]
+
+        await update.callback_query.edit_message_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode='Markdown'
         )
         return MENU
@@ -3465,10 +3765,13 @@ class TelegramBot:
             f"**Bot Statistics:**\n"
             f"  👥 Users: {stats.get('total_users', 0)}\n"
             f"  👨‍💼 Admins: {stats.get('total_admins', 0)}\n"
-            f"  🔄 Trades: {stats.get('total_trades', 0)}\n"
-            f"  💰 Total Profit: ${stats.get('total_profit', 0):.2f}\n"
+            f"  🔄 Total Trades: {stats.get('total_trades', 0)}\n"
+            f"  🐋 Copy Trades: {stats.get('total_copy_trades', 0)}\n"
+            f"  🧠 Smart Trades: {stats.get('total_smart_trades', 0)}\n"
+            f"  💰 Total Profit: {stats.get('total_profit_sol', 0):.4f} SOL\n"
             f"  🎯 Risk Orders: {stats.get('active_risk_orders', 0)}\n"
-            f"  🐋 Copy Targets: {stats.get('copy_trading_targets', 0)}"
+            f"  🐋 Copy Targets: {stats.get('copy_trading_targets', 0)}\n"
+            f"  🎨 Vanity Wallets: {stats.get('total_vanity_wallets', 0)}"
         )
 
         await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
@@ -3571,24 +3874,33 @@ class TelegramBot:
         await update.callback_query.answer()
         stats = admin_panel.get_bot_stats()
 
-        total_profit = stats.get('total_profit', 0)
-        total_trades = stats.get('total_trades', 0)
-        text = (
-            f"📊 **Bot Statistics**\n\n"
-            f"**Users:**\n"
-            f"  👥 Total: {stats.get('total_users', 0)}\n"
-            f"  👨‍💼 Admins: {stats.get('total_admins', 0)}\n\n"
-            f"**Trading:**\n"
-            f"  📊 Total Trades: {total_trades}\n"
-            f"  💰 Total Profit: ${total_profit:.2f}\n"
-            f"  📈 Avg/Trade: ${total_profit/max(total_trades,1):.2f}\n\n"
-            f"**Features:**\n"
-            f"  🎯 Vanity Wallets: {stats.get('total_vanity_wallets', 0)}\n"
-            f"  🛑 Risk Orders: {stats.get('active_risk_orders', 0)}\n"
-            f"  🐋 Copy Targets: {stats.get('copy_trading_targets', 0)}\n\n"
-            f"Generated: {datetime.now().strftime('%H:%M:%S')}"
-        )
-        
+        # Check for errors
+        if 'error' in stats:
+            text = f"❌ **Error Getting Stats**\n\n```\n{stats.get('error', 'Unknown error')}\n```"
+        else:
+            total_profit = stats.get('total_profit_sol', 0)
+            total_trades = stats.get('total_trades', 0)
+            copy_trades = stats.get('total_copy_trades', 0)
+            smart_trades = stats.get('total_smart_trades', 0)
+            
+            text = (
+                f"📊 **Bot Statistics**\n\n"
+                f"**Users:**\n"
+                f"  👥 Total Users: {stats.get('total_users', 0)}\n"
+                f"  👨‍💼 Admins: {stats.get('total_admins', 0)}\n\n"
+                f"**Trading Activity:**\n"
+                f"  🔄 Total Trades: {total_trades}\n"
+                f"  🐋 Copy Trades: {copy_trades}\n"
+                f"  🧠 Smart Trades: {smart_trades}\n"
+                f"  💰 Total Profit: {total_profit:.4f} SOL\n"
+                f"  📈 Avg Profit/Trade: {total_profit/max(total_trades,1):.4f} SOL\n\n"
+                f"**Features:**\n"
+                f"  🎨 Vanity Wallets: {stats.get('total_vanity_wallets', 0)}\n"
+                f"  🛑 Active Risk Orders: {stats.get('active_risk_orders', 0)}\n"
+                f"  🐋 Copy Trading Targets: {stats.get('copy_trading_targets', 0)}\n\n"
+                f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+
         keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="admin_panel")]]
         await update.callback_query.edit_message_text(
             text,
@@ -3940,6 +4252,12 @@ async def main():
                 CallbackQueryHandler(bot.view_private_key_callback, pattern="^view_private_key$"),
                 CallbackQueryHandler(bot.st_settings_callback, pattern="^st_settings$"),
                 CallbackQueryHandler(bot.st_settings_action_callback, pattern="^sts_"),
+                # Enhanced Features & FAQ
+                CallbackQueryHandler(bot.enhanced_features_callback, pattern="^enhanced_features$"),
+                CallbackQueryHandler(bot.enhanced_features_toggle_callback, pattern="^ef_toggle_"),
+                CallbackQueryHandler(bot.enhanced_features_details_callback, pattern="^ef_details$"),
+                CallbackQueryHandler(bot.faq_howto_callback, pattern="^faq_howto$"),
+                CallbackQueryHandler(bot.faq_subcategory_callback, pattern="^faq_(copy|smart|enhanced|risk)$"),
                 CallbackQueryHandler(bot.admin_panel_callback, pattern="^admin_panel$"),
                 # Copy trade sub-menu (SOL)
                 CallbackQueryHandler(bot.add_watch_wallet_callback, pattern="^add_watch_wallet$"),

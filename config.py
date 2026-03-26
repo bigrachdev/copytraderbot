@@ -145,6 +145,44 @@ SMART_REBUY_MAX_RISK        = float(os.getenv('SMART_REBUY_MAX_RISK',       '65'
 SMART_DEFAULT_MAX_POSITIONS = int(os.getenv('SMART_DEFAULT_MAX_POSITIONS',  '4'))
 SMART_DEFAULT_TRADE_PCT     = float(os.getenv('SMART_DEFAULT_TRADE_PCT',    '10.0'))
 
+# ── Enhanced Features Toggles (default: ON for first 4, OFF for others) ──────
+# Copy Trade enhancements
+ENABLE_DYNAMIC_COPY_SCALE   = os.getenv('ENABLE_DYNAMIC_COPY_SCALE', 'true').lower() == 'true'
+ENABLE_ENHANCED_WHALE_QUAL  = os.getenv('ENABLE_ENHANCED_WHALE_QUAL', 'true').lower() == 'true'
+ENABLE_LATENCY_OPTIMIZATION = os.getenv('ENABLE_LATENCY_OPTIMIZATION', 'true').lower() == 'true'
+ENABLE_SIGNAL_AGGREGATION   = os.getenv('ENABLE_SIGNAL_AGGREGATION', 'true').lower() == 'true'
+# Smart Trade enhancements
+ENABLE_KELLY_COPY_TRADES    = os.getenv('ENABLE_KELLY_COPY_TRADES', 'false').lower() == 'true'
+ENABLE_TOKEN_DISCOVERY_PLUS = os.getenv('ENABLE_TOKEN_DISCOVERY_PLUS', 'false').lower() == 'true'
+ENABLE_TP_LADDER_OPT        = os.getenv('ENABLE_TP_LADDER_OPT', 'false').lower() == 'true'
+ENABLE_REBUY_ENHANCED       = os.getenv('ENABLE_REBUY_ENHANCED', 'false').lower() == 'true'
+# Risk management
+ENABLE_DAILY_LOSS_LIMIT     = os.getenv('ENABLE_DAILY_LOSS_LIMIT', 'false').lower() == 'true'
+ENABLE_COOL_OFF_PERIOD      = os.getenv('ENABLE_COOL_OFF_PERIOD', 'false').lower() == 'true'
+# MEV Protection
+ENABLE_JITO_PROTECTION      = os.getenv('ENABLE_JITO_PROTECTION', 'false').lower() == 'true'
+# Token Safety
+ENABLE_RUGCHECK_FILTER      = os.getenv('ENABLE_RUGCHECK_FILTER', 'false').lower() == 'true'
+
+# ── Enhanced Feature Defaults ─────────────────────────────────────────────────
+DYNAMIC_COPY_SCALE_FACTOR   = float(os.getenv('DYNAMIC_COPY_SCALE_FACTOR', '0.5'))  # Win rate sensitivity
+WHALE_MIN_TRADES_ENHANCED   = int(os.getenv('WHALE_MIN_TRADES_ENHANCED', '10'))     # Min trades for enhanced qual
+WHALE_MAX_DRAWDOWN          = float(os.getenv('WHALE_MAX_DRAWDOWN', '30.0'))        # Max drawdown % before pause
+LATENCY_HIGH_THRESHOLD_MS   = int(os.getenv('LATENCY_HIGH_THRESHOLD_MS', '30000'))  # 30s = high latency
+LATENCY_SLIPPAGE_ADJUST     = float(os.getenv('LATENCY_SLIPPAGE_ADJUST', '0.5'))    # Extra slippage for high latency
+SIGNAL_MIN_WHALES_RISKY     = int(os.getenv('SIGNAL_MIN_WHALES_RISKY', '2'))        # Min whales for risky tokens
+KELLY_FRACTION_CAP          = float(os.getenv('KELLY_FRACTION_CAP', '0.5'))         # Fractional Kelly (50%)
+KELLY_MAX_POSITION_PCT      = float(os.getenv('KELLY_MAX_POSITION_PCT', '15.0'))    # Max 15% per position
+TP_LADDER_VOLATILITY_ADJ    = os.getenv('TP_LADDER_VOLATILITY_ADJ', 'true').lower() == 'true'
+TP_BREAKEVEN_AFTER_TP1      = os.getenv('TP_BREAKEVEN_AFTER_TP1', 'true').lower() == 'true'
+REBUY_MAX_PER_TOKEN         = int(os.getenv('REBUY_MAX_PER_TOKEN', '2'))            # Max rebuys per token
+REBUY_PROFIT_REDUCTION      = float(os.getenv('REBUY_PROFIT_REDUCTION', '0.5'))     # Cooldown reduction if last trade profitable
+DAILY_LOSS_LIMIT_PCT        = float(os.getenv('DAILY_LOSS_LIMIT_PCT', '10.0'))      # Stop trading after -10% day
+COOL_OFF_LOSSES             = int(os.getenv('COOL_OFF_LOSSES', '3'))                # Cool-off after 3 consecutive losses
+COOL_OFF_MINUTES            = int(os.getenv('COOL_OFF_MINUTES', '30'))              # Cool-off duration
+JITO_MIN_TRADE_SOL          = float(os.getenv('JITO_MIN_TRADE_SOL', '5.0'))         # Use Jito for trades > 5 SOL
+RUGCHECK_MIN_SCORE          = int(os.getenv('RUGCHECK_MIN_SCORE', '60'))            # Min RugCheck score (0-100)
+
 # ── Token Analyzer — liquidity tiers (USD) ───────────────────────────────────
 TOKEN_MIN_LIQUIDITY_SAFE   = float(os.getenv('TOKEN_MIN_LIQUIDITY_SAFE',   '50000'))
 TOKEN_MIN_LIQUIDITY_MEDIUM = float(os.getenv('TOKEN_MIN_LIQUIDITY_MEDIUM', '5000'))

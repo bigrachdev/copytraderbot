@@ -39,10 +39,13 @@ from config import (
     COPY_DEFAULT_PROFIT_TARGET, COPY_DEFAULT_TRAILING_STOP,
     COPY_DEFAULT_MAX_LOSS, COPY_DEFAULT_MAX_HOLD_HOURS,
     COPY_MAX_PRICE_IMPACT_PCT,
+    ENABLE_JITO_PROTECTION, JITO_MIN_TRADE_SOL,
 )
 from data.database import db
 from chains.solana.dex_swaps import swapper
 from utils.notifications import notification_engine
+from trading.enhanced_features import enhanced_features
+from trading.mev_protection import mev_protection
 
 logger = logging.getLogger(__name__)
 
@@ -293,9 +296,17 @@ class CopyTradingEngine:
     def _is_whale_qualified(self, user_id: int, whale_address: str) -> Tuple[bool, str]:
         """Check historical copy-performance to decide if this whale is worth copying.
 
+        Uses enhanced qualification if enabled (Sharpe ratio, drawdown checks).
         Wallets with fewer than WHALE_MIN_TRADES closed positions pass through
         with a warning — we can't disqualify on insufficient data.
         """
+        # Try enhanced qualification first
+        qualified, reason = enhanced_features.is_whale_qualified_enhanced(user_id, whale_address)
+        if not qualified:
+            logger.warning(f"⛔ Whale {whale_address[:8]} not qualified (enhanced): {reason}")
+            return False, reason
+
+        # Fall back to basic qualification if enhanced is disabled or passes
         records = db.get_copy_performance(user_id, whale_address, limit=50)
         closed = [
             r for r in records
@@ -323,6 +334,7 @@ class CopyTradingEngine:
     async def _passes_token_filter(self, token_address: str) -> Tuple[bool, str]:
         """Run the token_analyzer safety checks before copying a trade.
 
+        Includes RugCheck integration if enabled.
         On API error we block the trade — never copy an unverified token.
         """
         try:
@@ -335,7 +347,13 @@ class CopyTradingEngine:
                 return False, recommendation
             if risk_score > 85:
                 return False, f"risk_score={risk_score:.0f}"
-            return True, f"ok  risk={risk_score:.0f}"
+
+            # Additional RugCheck filter if enabled
+            passes_rugcheck, rugcheck_score = await enhanced_features.check_rugcheck_score(token_address)
+            if not passes_rugcheck:
+                return False, f"rugcheck_score={rugcheck_score}"
+
+            return True, f"ok  risk={risk_score:.0f}  rugcheck={rugcheck_score}"
         except Exception as e:
             logger.warning(f"Token filter unavailable — blocking trade for safety: {e}")
             return False, "filter_unavailable"
@@ -349,10 +367,7 @@ class CopyTradingEngine:
     ) -> Tuple[bool, int, float]:
         """Register a buy signal and return (should_execute, unique_whales, size_multiplier).
 
-        A token is executed on the first signal. If a second or third distinct whale
-        confirms within SIGNAL_WINDOW_SECONDS the position size is boosted (1.25x / 1.5x)
-        and the position is not re-opened — the boost is applied to a new copy trade only
-        if no trade has been executed yet in this window.
+        Enhanced version uses performance-weighted multipliers and requires min whales for risky tokens.
         """
         now = time.time()
         token = swap_data['outputMint']
@@ -386,8 +401,11 @@ class CopyTradingEngine:
         for s in existing:
             s['executed'] = True
 
-        # Size multiplier: 1x → 1.25x → 1.5x for 1 / 2 / 3+ whales
-        multiplier = 1.0 + min(unique_count - 1, 2) * 0.25
+        # Enhanced signal aggregation with performance weighting
+        multiplier = enhanced_features.get_signal_multiplier_enhanced(
+            user_id, token, unique_count, whale_ranks=[]
+        )
+
         return True, unique_count, multiplier
 
     # ------------------------------------------------------------------
@@ -476,14 +494,17 @@ class CopyTradingEngine:
         # 6. Close existing open position in the same token
         await self._close_existing_position(user_id, output_mint)
 
-        # 7. Portfolio-% based amount calculation
+        # 7. Portfolio-% based amount calculation with dynamic scaling
         whale_pct = await self._get_whale_portfolio_pct(
             whale_address, swap_data['inputAmount']
         )
         user_balance = await self._get_user_sol_balance(user_id)
-        scale  = float(wallet_config.get('copy_scale', DEFAULT_COPY_SCALE))
+        base_scale = float(wallet_config.get('copy_scale', DEFAULT_COPY_SCALE))
+        
+        # Apply dynamic copy scale based on whale performance
+        scale = enhanced_features.get_dynamic_copy_scale(user_id, whale_address, base_scale)
+        
         weight = float(wallet_config.get('weight', 1.0))
-
         amount = user_balance * whale_pct * scale * weight * size_multiplier
 
         # Fallback to flat scaling when balance is unavailable
@@ -604,8 +625,13 @@ class CopyTradingEngine:
                 logger.error(f"User {user_id} not found")
                 return False
 
-            # Get best price quote
-            swap_data = await swapper.get_best_price(input_mint, output_mint, amount)
+            # Get best price quote with latency-optimized slippage
+            base_slippage = float(db.get_user_setting(user_id, 'slippage_tolerance', 2.0))
+            adjusted_slippage = enhanced_features.get_latency_adjusted_slippage(
+                base_slippage, exec_time_ms
+            )
+            
+            swap_data = await swapper.get_best_price(input_mint, output_mint, amount, slippage_bps=int(adjusted_slippage * 100))
             if not swap_data:
                 logger.error("No price quote available")
                 return False
@@ -638,6 +664,9 @@ class CopyTradingEngine:
                 logger.error(f"Cannot execute copy trade — no keypair for user {user_id}")
                 return False
 
+            # Check if should use Jito for MEV protection
+            use_jito = await enhanced_features.should_use_jito(amount)
+
             # Open performance record
             position_id = db.open_copy_position(
                 user_id=user_id,
@@ -652,10 +681,17 @@ class CopyTradingEngine:
                 signal_count=signal_count,
             )
 
-            # Execute swap (on-chain)
-            swap_result = await swapper.execute_swap(
-                input_mint, output_mint, amount, dex, keypair=keypair
-            )
+            # Execute swap with optional Jito protection
+            if use_jito:
+                logger.info(f"🔒 Using Jito private pool for MEV protection")
+                swap_result = await swapper.execute_swap(
+                    input_mint, output_mint, amount, dex, keypair=keypair,
+                    use_private_tx=True
+                )
+            else:
+                swap_result = await swapper.execute_swap(
+                    input_mint, output_mint, amount, dex, keypair=keypair
+                )
 
             if swap_result and swap_result.get('status') in ('confirmed', 'quoted'):
                 tokens_received = swap_result.get('expectedOutput', output_amount)

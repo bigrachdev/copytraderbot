@@ -505,71 +505,122 @@ class AdminPanel:
             conn = db.get_connection()
             cursor = conn.cursor()
 
-            try:
-                cursor.execute("SELECT COUNT(*) FROM users")
-                total_users = cursor.fetchone()[0] or 0
-                
-                cursor.execute("SELECT COUNT(*) FROM users WHERE is_admin=%s", (True,))
-                total_admins = cursor.fetchone()[0] or 0
-                
-                cursor.execute("SELECT COUNT(*) FROM trades")
-                total_trades = cursor.fetchone()[0] or 0
-                
-                cursor.execute("SELECT SUM(output_amount - input_amount) FROM trades")
-                total_profit = cursor.fetchone()[0] or 0
-                
-                cursor.execute("SELECT COUNT(*) FROM vanity_wallets")
-                total_vanity = cursor.fetchone()[0] or 0
-                
-                cursor.execute("SELECT COUNT(*) FROM risk_orders WHERE is_active=%s", (True,))
-                active_orders = cursor.fetchone()[0] or 0
-                
-                cursor.execute("SELECT COUNT(*) FROM watched_wallets")
-                copy_targets = cursor.fetchone()[0] or 0
-            except Exception:
-                # Fallback for SQLite
-                cursor.execute("SELECT COUNT(*) FROM users")
-                total_users = cursor.fetchone()[0] or 0
-                
-                cursor.execute("SELECT COUNT(*) FROM users WHERE is_admin=1")
-                total_admins = cursor.fetchone()[0] or 0
-                
-                cursor.execute("SELECT COUNT(*) FROM trades")
-                total_trades = cursor.fetchone()[0] or 0
-                
-                cursor.execute("SELECT SUM(output_amount - input_amount) FROM trades")
-                total_profit = cursor.fetchone()[0] or 0
-                
-                cursor.execute("SELECT COUNT(*) FROM vanity_wallets")
-                total_vanity = cursor.fetchone()[0] or 0
-                
-                cursor.execute("SELECT COUNT(*) FROM risk_orders WHERE is_active=1")
-                active_orders = cursor.fetchone()[0] or 0
-                
-                cursor.execute("SELECT COUNT(*) FROM watched_wallets")
-                copy_targets = cursor.fetchone()[0] or 0
-
-            conn.close()
-
-            return {
-                'total_users': total_users,
-                'total_admins': total_admins,
-                'total_trades': total_trades,
-                'total_profit': total_profit,
-                'total_vanity_wallets': total_vanity,
-                'active_risk_orders': active_orders,
-                'copy_trading_targets': copy_targets,
+            # Initialize stats dict
+            stats = {
+                'total_users': 0,
+                'total_admins': 0,
+                'total_trades': 0,
+                'total_copy_trades': 0,
+                'total_smart_trades': 0,
+                'total_profit_sol': 0,
+                'total_vanity_wallets': 0,
+                'active_risk_orders': 0,
+                'copy_trading_targets': 0,
                 'timestamp': datetime.now().isoformat()
             }
+
+            try:
+                # PostgreSQL queries
+                cursor.execute("SELECT COUNT(*) FROM users")
+                stats['total_users'] = cursor.fetchone()[0] or 0
+
+                cursor.execute("SELECT COUNT(*) FROM users WHERE is_admin = TRUE")
+                stats['total_admins'] = cursor.fetchone()[0] or 0
+
+                cursor.execute("SELECT COUNT(*) FROM trades")
+                stats['total_trades'] = cursor.fetchone()[0] or 0
+
+                cursor.execute("SELECT COUNT(*) FROM trades WHERE is_copy = TRUE")
+                stats['total_copy_trades'] = cursor.fetchone()[0] or 0
+
+                cursor.execute("SELECT COUNT(*) FROM smart_trades")
+                stats['total_smart_trades'] = cursor.fetchone()[0] or 0
+
+                # Calculate total profit from closed smart trades
+                cursor.execute("""
+                    SELECT COALESCE(SUM(
+                        CASE 
+                            WHEN is_closed = TRUE AND profit_percent IS NOT NULL 
+                            THEN (sol_received - sol_spent)
+                            ELSE 0
+                        END
+                    ), 0) FROM smart_trades
+                """)
+                stats['total_profit_sol'] = cursor.fetchone()[0] or 0
+
+                cursor.execute("SELECT COUNT(*) FROM vanity_wallets")
+                stats['total_vanity_wallets'] = cursor.fetchone()[0] or 0
+
+                cursor.execute("SELECT COUNT(*) FROM risk_orders WHERE is_active = TRUE")
+                stats['active_risk_orders'] = cursor.fetchone()[0] or 0
+
+                cursor.execute("SELECT COUNT(*) FROM watched_wallets WHERE is_active = TRUE")
+                stats['copy_trading_targets'] = cursor.fetchone()[0] or 0
+
+            except psycopg.Error:
+                # Fallback for SQLite
+                logger.info("PostgreSQL query failed, trying SQLite fallback...")
+                
+                cursor.execute("SELECT COUNT(*) FROM users")
+                stats['total_users'] = cursor.fetchone()[0] or 0
+
+                cursor.execute("SELECT COUNT(*) FROM users WHERE is_admin = 1")
+                stats['total_admins'] = cursor.fetchone()[0] or 0
+
+                cursor.execute("SELECT COUNT(*) FROM trades")
+                stats['total_trades'] = cursor.fetchone()[0] or 0
+
+                cursor.execute("SELECT COUNT(*) FROM trades WHERE is_copy = 0")
+                stats['total_copy_trades'] = cursor.fetchone()[0] or 0
+
+                cursor.execute("SELECT COUNT(*) FROM smart_trades")
+                stats['total_smart_trades'] = cursor.fetchone()[0] or 0
+
+                cursor.execute("""
+                    SELECT COALESCE(SUM(
+                        CASE 
+                            WHEN is_closed = 1 AND profit_percent IS NOT NULL 
+                            THEN (sol_received - sol_spent)
+                            ELSE 0
+                        END
+                    ), 0) FROM smart_trades
+                """)
+                stats['total_profit_sol'] = cursor.fetchone()[0] or 0
+
+                cursor.execute("SELECT COUNT(*) FROM vanity_wallets")
+                stats['total_vanity_wallets'] = cursor.fetchone()[0] or 0
+
+                cursor.execute("SELECT COUNT(*) FROM risk_orders WHERE is_active = 1")
+                stats['active_risk_orders'] = cursor.fetchone()[0] or 0
+
+                cursor.execute("SELECT COUNT(*) FROM watched_wallets WHERE is_active = 1")
+                stats['copy_trading_targets'] = cursor.fetchone()[0] or 0
+
+            conn.close()
+            
+            logger.info(f"📊 Bot stats retrieved: {stats['total_users']} users, {stats['total_trades']} trades")
+            return stats
+            
         except Exception as e:
             logger.error(f"❌ Error getting bot stats: {e}")
-            return {}
+            import traceback
+            logger.error(traceback.format_exc())
+            return {
+                'total_users': 0,
+                'total_admins': 0,
+                'total_trades': 0,
+                'error': str(e)
+            }
 
     def generate_admin_report(self) -> str:
         """Generate comprehensive admin report"""
         try:
             stats = self.get_bot_stats()
             users = self.get_all_users()
+
+            # Check for errors in stats
+            if 'error' in stats:
+                return f"❌ Error generating report: {stats.get('error', 'Unknown error')}"
 
             report = (
                 f"📊 **BOT ADMIN REPORT**\n\n"
@@ -579,8 +630,10 @@ class AdminPanel:
                 f"  • Active Users: {len([u for u in users if u])}\n\n"
                 f"**Trading Statistics:**\n"
                 f"  • Total Trades: {stats['total_trades']}\n"
-                f"  • Total Profit: ${stats['total_profit']:.2f}\n"
-                f"  • Avg Profit/Trade: ${stats['total_profit'] / max(stats['total_trades'], 1):.2f}\n\n"
+                f"  • Copy Trades: {stats.get('total_copy_trades', 0)}\n"
+                f"  • Smart Trades: {stats.get('total_smart_trades', 0)}\n"
+                f"  • Total Profit: {stats['total_profit_sol']:.4f} SOL\n"
+                f"  • Avg Profit/Trade: {stats['total_profit_sol'] / max(stats['total_trades'], 1):.4f} SOL\n\n"
                 f"**Feature Usage:**\n"
                 f"  • Vanity Wallets: {stats['total_vanity_wallets']}\n"
                 f"  • Active Risk Orders: {stats['active_risk_orders']}\n"
