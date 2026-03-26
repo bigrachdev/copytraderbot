@@ -5,7 +5,11 @@ import logging
 from typing import Optional, Dict, Tuple
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
+from solders.transaction import VersionedTransaction, Transaction
+from solders.system_program import TransferParams, transfer
+from solders.message import MessageV0
 import base58
+import base64
 import json
 import requests
 from config import SOLANA_RPC_URL, RPC_TIMEOUT
@@ -118,6 +122,124 @@ class SolanaWallet:
         except Exception as e:
             logger.error(f"Error getting blockhash: {e}")
             return None
+
+    def send_sol(self, from_wallet_address: str, to_address: str, amount: float, 
+                 private_key: str = None, keypair: Keypair = None) -> Optional[Dict]:
+        """Send SOL to another address.
+        
+        Args:
+            from_wallet_address: Sender's wallet address
+            to_address: Recipient's address
+            amount: Amount of SOL to send
+            private_key: Optional private key (base58 encoded)
+            keypair: Optional Keypair object (takes precedence over private_key)
+        
+        Returns:
+            Dict with 'success', 'tx_hash', and optional 'error'
+        """
+        try:
+            # Get keypair
+            if not keypair:
+                if not private_key:
+                    return {'success': False, 'error': 'No private key provided'}
+                keypair = self.import_keypair(private_key)
+                if not keypair:
+                    return {'success': False, 'error': 'Invalid private key'}
+            
+            # Validate recipient address
+            try:
+                to_pubkey = Pubkey.from_string(to_address)
+            except Exception as e:
+                return {'success': False, 'error': f'Invalid recipient address: {str(e)}'}
+            
+            # Get recent blockhash
+            blockhash = self.get_recent_blockhash()
+            if not blockhash:
+                return {'success': False, 'error': 'Failed to get recent blockhash'}
+            
+            # Create transfer instruction
+            from_pubkey = Pubkey.from_string(from_wallet_address)
+            lamports = int(amount * 1e9)  # Convert SOL to lamports
+            
+            ix = transfer(
+                TransferParams(
+                    from_pubkey=from_pubkey,
+                    to_pubkey=to_pubkey,
+                    lamports=lamports
+                )
+            )
+            
+            # Create and sign transaction
+            msg = MessageV0.try_compile(
+                payer=from_pubkey,
+                instructions=[ix],
+                address_lookup_table_accounts=[],
+                recent_blockhash=Pubkey.from_string(blockhash)
+            )
+            
+            tx = VersionedTransaction(msg, [keypair])
+            
+            # Send transaction
+            tx_encoded = base64.b64encode(bytes(tx)).decode()
+            
+            payload = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "sendTransaction",
+                "params": [
+                    tx_encoded,
+                    {
+                        "encoding": "base64",
+                        "skipPreflight": False,
+                        "preflightCommitment": "confirmed"
+                    }
+                ]
+            }
+            
+            response = requests.post(self.rpc_url, json=payload, timeout=30)
+            if response.status_code == 200:
+                data = response.json()
+                if 'result' in data:
+                    tx_hash = data['result']
+                    return {'success': True, 'tx_hash': tx_hash, 'signature': tx_hash}
+                elif 'error' in data:
+                    error_msg = data['error'].get('message', 'Unknown error')
+                    return {'success': False, 'error': error_msg}
+            
+            return {'success': False, 'error': 'Failed to send transaction'}
+            
+        except Exception as e:
+            logger.error(f"Error sending SOL: {e}")
+            return {'success': False, 'error': str(e)}
+
+    def send_spl_token(self, from_wallet_address: str, to_address: str, 
+                       token_mint: str, amount: float, decimals: int = 9,
+                       private_key: str = None, keypair: Keypair = None) -> Optional[Dict]:
+        """Send SPL token to another address.
+        
+        Args:
+            from_wallet_address: Sender's wallet address
+            to_address: Recipient's address
+            token_mint: Token mint address
+            amount: Amount of tokens to send
+            decimals: Token decimals (default 9)
+            private_key: Optional private key (base58 encoded)
+            keypair: Optional Keypair object
+        
+        Returns:
+            Dict with 'success', 'tx_hash', and optional 'error'
+        """
+        try:
+            # This requires more complex SPL token program integration
+            # For now, return a helpful error
+            return {
+                'success': False, 
+                'error': 'SPL token transfers require additional setup. Please use Phantom or another wallet for token transfers.'
+            }
+            
+        except Exception as e:
+            logger.error(f"Error sending SPL token: {e}")
+            return {'success': False, 'error': str(e)}
 
 
 # Utility function for encryption

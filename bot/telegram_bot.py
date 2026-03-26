@@ -14,6 +14,7 @@ from config import TELEGRAM_BOT_TOKEN, BIRDEYE_API_KEY, BIRDEYE_API_URL, JUPITER
 from data.database import db
 from chains.solana.wallet import SolanaWallet, encrypt_private_key, decrypt_private_key
 from chains.solana.dex_swaps import swapper
+from chains.solana.spl_tokens import token_manager
 from trading.copy_trader import copy_trader
 from utils.chain_detector import is_solana_address
 from chains.solana.vanity_wallet import vanity_generator
@@ -110,7 +111,9 @@ async def fetch_top_traders(limit: int = 20) -> list:
  # Auto Smart Trade
  AUTO_SMART_PERCENT,
  # Smart Trade Settings
- ST_SETTINGS_INPUT) = range(33)
+ ST_SETTINGS_INPUT,
+ # Holdings view
+ HOLDINGS_VIEW, HOLDINGS_SELL_CONFIRM) = range(35)
 
 
 class TelegramBot:
@@ -121,7 +124,7 @@ class TelegramBot:
         self.import_keys = {}  # Temporary storage for import flow
     
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        """Start command"""
+        """Start command - works for both new users and existing users"""
         user_id = update.effective_user.id
 
         # Check if user exists
@@ -134,19 +137,38 @@ class TelegramBot:
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
 
-            await update.message.reply_text(
-                "👋 Welcome to **Solana DEX Copy Trader**!\n\n"
-                "This bot lets you:\n"
-                "✅ Swap tokens on Solana via Jupiter\n"
-                "✅ Copy trades from whale wallets on Solana\n"
-                "✅ Smart token analyzer with auto-trade\n\n"
-                "Get started by creating or importing a wallet:",
-                reply_markup=reply_markup,
-                parse_mode='Markdown'
-            )
+            # Handle both message and callback query
+            if update.callback_query:
+                await update.callback_query.edit_message_text(
+                    "👋 Welcome to **Solana DEX Copy Trader**!\n\n"
+                    "This bot lets you:\n"
+                    "✅ Swap tokens on Solana via Jupiter\n"
+                    "✅ Copy trades from whale wallets on Solana\n"
+                    "✅ Smart token analyzer with auto-trade\n\n"
+                    "Get started by creating or importing a wallet:",
+                    reply_markup=reply_markup,
+                    parse_mode='Markdown'
+                )
+            elif update.message:
+                await update.message.reply_text(
+                    "👋 Welcome to **Solana DEX Copy Trader**!\n\n"
+                    "This bot lets you:\n"
+                    "✅ Swap tokens on Solana via Jupiter\n"
+                    "✅ Copy trades from whale wallets on Solana\n"
+                    "✅ Smart token analyzer with auto-trade\n\n"
+                    "Get started by creating or importing a wallet:",
+                    reply_markup=reply_markup,
+                    parse_mode='Markdown'
+                )
             return MENU
         else:
-            await self.show_main_menu(update, context)
+            # Existing user - show main menu
+            if update.callback_query:
+                await self.show_main_menu(update, context)
+            elif update.message:
+                await update.message.reply_text("🤖 **Main Menu**\n\nSelect an option below:",
+                                                parse_mode='Markdown')
+                await self.show_main_menu(update, context)
             return MENU
     
     async def show_main_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -179,8 +201,9 @@ class TelegramBot:
              InlineKeyboardButton("📥 Receive", callback_data="receive")],
             [InlineKeyboardButton("🐋 Copy Trade", callback_data="copy_trade"),
              InlineKeyboardButton("🤖 Smart Analyzer", callback_data="smart_trade")],
-            [InlineKeyboardButton("📂 Positions", callback_data="active_positions"),
-             InlineKeyboardButton("⚠️ Risk", callback_data="risk_mgmt")],
+            [InlineKeyboardButton("📊 My Holdings", callback_data="my_holdings"),
+             InlineKeyboardButton("📂 Positions", callback_data="active_positions")],
+            [InlineKeyboardButton("⚠️ Risk", callback_data="risk_mgmt")],
             [InlineKeyboardButton("📊 Analytics", callback_data="analytics"),
              InlineKeyboardButton("🔧 Tools", callback_data="tools"),
              InlineKeyboardButton("⚙️", callback_data="settings")],
@@ -292,6 +315,49 @@ class TelegramBot:
     # Solana Swap Flow
     # ──────────────────────────────────────────────────────────────────────────
 
+    async def _fetch_token_info(self, token_mint: str) -> Optional[Dict]:
+        """Fetch token metadata from multiple sources."""
+        token_info = {
+            'mint': token_mint,
+            'symbol': 'Unknown',
+            'name': 'Unknown Token',
+            'decimals': 9,
+            'verified': False,
+            'logo': None,
+        }
+        
+        try:
+            # Try Jupiter metadata first
+            metadata = await token_manager.get_token_metadata(token_mint)
+            if metadata:
+                token_info['symbol'] = metadata.get('symbol', token_info['symbol'])
+                token_info['name'] = metadata.get('name', token_info['name'])
+                token_info['decimals'] = metadata.get('decimals', token_info['decimals'])
+                token_info['verified'] = metadata.get('verified', False)
+                token_info['logo'] = metadata.get('logoURI')
+            
+            # Fallback to Birdeye if symbol still unknown
+            if token_info['symbol'] == 'Unknown':
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        f"{BIRDEYE_API_URL}/defi/token_metadata",
+                        params={'address': token_mint},
+                        headers={'X-API-KEY': BIRDEYE_API_KEY, 'x-chain': 'solana'},
+                        timeout=aiohttp.ClientTimeout(total=5),
+                    ) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            if data.get('success'):
+                                token_data = data.get('data', {})
+                                token_info['symbol'] = token_data.get('symbol', token_info['symbol'])
+                                token_info['name'] = token_data.get('name', token_info['name'])
+                                token_info['decimals'] = token_data.get('decimals', token_info['decimals'])
+                                token_info['verified'] = token_data.get('verified', False)
+        except Exception as e:
+            logger.debug(f"Error fetching token info for {token_mint}: {e}")
+        
+        return token_info
+
     def _sol_token_keyboard(self, prefix: str = "soltok") -> InlineKeyboardMarkup:
         """Build a quick-pick keyboard of popular Solana tokens."""
         symbols = list(POPULAR_SOL_TOKENS.keys())
@@ -364,8 +430,10 @@ class TelegramBot:
         symbol = data.replace("soltok_", "")
 
         if symbol == "custom":
+            keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="back_menu")]]
             await update.callback_query.edit_message_text(
-                "📝 Enter the Solana token contract address (base58):"
+                "📝 Enter the Solana token contract address (base58):",
+                reply_markup=InlineKeyboardMarkup(keyboard)
             )
             return SWAP_TOKEN_INPUT  # wait for text message
 
@@ -378,14 +446,68 @@ class TelegramBot:
 
     async def handle_sol_custom_token(self, update: Update,
                                        context: ContextTypes.DEFAULT_TYPE) -> int:
-        """Handle manually-typed Solana token address."""
+        """Handle manually-typed Solana token address with token info confirmation."""
         addr = update.message.text.strip()
+        
         if not self.wallet_manager.validate_address(addr):
+            keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="back_menu")]]
             await update.message.reply_text(
-                "❌ Invalid Solana address format. Please try again:"
+                "❌ Invalid Solana address format. Please try again:",
+                reply_markup=InlineKeyboardMarkup(keyboard)
             )
             return SWAP_TOKEN_INPUT
-        return await self._sol_token_selected(update, context, addr, addr[:8] + "...")
+        
+        # Fetch token info
+        msg = await update.message.reply_text("🔍 Fetching token details...")
+        token_info = await self._fetch_token_info(addr)
+        
+        # Check if token appears to be valid (has symbol from a known source)
+        if token_info['symbol'] == 'Unknown':
+            keyboard = [
+                [InlineKeyboardButton("✅ Swap Anyway (High Risk)", callback_data="confirm_custom_input")],
+                [InlineKeyboardButton("❌ Cancel", callback_data="back_menu")],
+            ]
+            context.user_data['pending_token_address'] = addr
+            await msg.edit_text(
+                "⚠️ **Unknown Token - High Risk!**\n\n"
+                f"Token Address: `{addr[:30]}...`\n\n"
+                "This token was not found in Jupiter or Birdeye databases.\n"
+                "It could be:\n"
+                "• A brand new token (launched <5min ago)\n"
+                "• A scam/fake token\n"
+                "• A token with no metadata\n\n"
+                "⚠️ **WARNING:** You may lose ALL funds if this is a scam!\n\n"
+                "Proceed only if you're absolutely sure:",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode='Markdown'
+            )
+            return CONFIRM_SWAP
+        else:
+            # Show token confirmation
+            verified_badge = "✅" if token_info['verified'] else "⚠️"
+            keyboard = [
+                [InlineKeyboardButton("✅ Confirm Token", callback_data="confirm_custom_input")],
+                [InlineKeyboardButton("❌ Cancel", callback_data="back_menu")],
+            ]
+            context.user_data['pending_token_address'] = addr
+            context.user_data['pending_token_info'] = token_info
+            
+            await msg.edit_text(
+                f"🪙 **Token Confirmation**\n\n"
+                f"{verified_badge} **{token_info['symbol']}**\n"
+                f"📛 Name: `{token_info['name']}`\n"
+                f"🔑 Mint: `{addr}`\n"
+                f"🔢 Decimals: `{token_info['decimals']}`\n"
+                f"{'✅ Verified on Jupiter' if token_info['verified'] else '⚠️ Not verified - trade carefully'}\n\n"
+                f"⚠️ **Always verify:**\n"
+                f"• Check the mint address matches expected token\n"
+                f"• Verify on CoinGecko/DexScreener\n"
+                f"• Never trust blindly!\n\n"
+                f"Confirm this is the correct token:",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode='Markdown'
+            )
+            return CONFIRM_SWAP
 
     async def _sol_token_selected(self, update, context, mint: str, label: str) -> int:
         """Store the selected token and advance to next step."""
@@ -444,8 +566,10 @@ class TelegramBot:
         symbol = data.replace("soltok_out_", "")
 
         if symbol == "custom":
+            keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="back_menu")]]
             await update.callback_query.edit_message_text(
-                "📝 Enter the OUTPUT token contract address (base58):"
+                "📝 Enter the OUTPUT token contract address (base58):",
+                reply_markup=InlineKeyboardMarkup(keyboard)
             )
             return SWAP_OUTPUT_TOKEN
 
@@ -457,25 +581,78 @@ class TelegramBot:
 
     async def handle_sol_custom_output_token(self, update: Update,
                                               context: ContextTypes.DEFAULT_TYPE) -> int:
-        """Manually-typed output token address for token→token."""
+        """Manually-typed output token address for token→token with confirmation."""
         addr = update.message.text.strip()
+        
         if not self.wallet_manager.validate_address(addr):
-            await update.message.reply_text("❌ Invalid address. Try again:")
+            keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="back_menu")]]
+            await update.message.reply_text("❌ Invalid address. Try again:",
+                                            reply_markup=InlineKeyboardMarkup(keyboard))
             return SWAP_OUTPUT_TOKEN
-        return await self._sol_token_selected(update, context, addr, addr[:8] + "...")
+        
+        # Fetch token info
+        msg = await update.message.reply_text("🔍 Fetching token details...")
+        token_info = await self._fetch_token_info(addr)
+        
+        # Check if token appears to be valid
+        if token_info['symbol'] == 'Unknown':
+            keyboard = [
+                [InlineKeyboardButton("✅ Swap Anyway (High Risk)", callback_data="confirm_custom_output")],
+                [InlineKeyboardButton("❌ Cancel", callback_data="back_menu")],
+            ]
+            context.user_data['pending_token_address'] = addr
+            await msg.edit_text(
+                "⚠️ **Unknown Token - High Risk!**\n\n"
+                f"Token Address: `{addr[:30]}...`\n\n"
+                "This token was not found in Jupiter or Birdeye databases.\n"
+                "It could be:\n"
+                "• A brand new token\n"
+                "• A scam/fake token\n"
+                "• A token with no metadata\n\n"
+                "⚠️ **WARNING:** You may lose ALL funds!\n\n"
+                "Proceed only if you're sure:",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode='Markdown'
+            )
+            return CONFIRM_SWAP
+        else:
+            verified_badge = "✅" if token_info['verified'] else "⚠️"
+            keyboard = [
+                [InlineKeyboardButton("✅ Confirm Token", callback_data="confirm_custom_output")],
+                [InlineKeyboardButton("❌ Cancel", callback_data="back_menu")],
+            ]
+            context.user_data['pending_token_address'] = addr
+            context.user_data['pending_token_info'] = token_info
+            
+            await msg.edit_text(
+                f"🪙 **Token Confirmation**\n\n"
+                f"{verified_badge} **{token_info['symbol']}**\n"
+                f"📛 Name: `{token_info['name']}`\n"
+                f"🔑 Mint: `{addr}`\n"
+                f"🔢 Decimals: `{token_info['decimals']}`\n"
+                f"{'✅ Verified on Jupiter' if token_info['verified'] else '⚠️ Not verified'}\n\n"
+                f"Confirm this is the correct output token:",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode='Markdown'
+            )
+            return CONFIRM_SWAP
 
     async def handle_swap_amount(self, update: Update,
                                   context: ContextTypes.DEFAULT_TYPE) -> int:
-        """Amount entered — fetch Jupiter quote and show swap preview."""
+        """Amount entered — fetch Jupiter quote and show swap preview with balance check."""
         try:
             amount = float(update.message.text.strip())
         except ValueError:
+            keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="back_menu")]]
             await update.message.reply_text("❌ Enter a valid number (e.g. `0.5`):",
+                                            reply_markup=InlineKeyboardMarkup(keyboard),
                                             parse_mode='Markdown')
             return SWAP_AMOUNT
 
         if amount <= 0:
-            await update.message.reply_text("❌ Amount must be greater than 0.")
+            keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="back_menu")]]
+            await update.message.reply_text("❌ Amount must be greater than 0.",
+                                            reply_markup=InlineKeyboardMarkup(keyboard))
             return SWAP_AMOUNT
 
         context.user_data['sol_swap_amount'] = amount
@@ -503,8 +680,71 @@ class TelegramBot:
             await update.message.reply_text("❌ Token not set. Please restart the swap.")
             return MENU
 
-        msg = await update.message.reply_text("⏳ Getting best quote from Jupiter...")
-
+        # ── BALANCE VERIFICATION ──────────────────────────────────────────────
+        user_id = update.effective_user.id
+        user = db.get_user(user_id)
+        
+        if not user:
+            await update.message.reply_text("❌ User not found. Please restart the bot.")
+            return MENU
+        
+        wallet_addr = user['wallet_address']
+        msg = await update.message.reply_text("⏳ Checking balances and fetching quote...")
+        
+        # Check input token balance
+        if input_mint == WSOL_MINT:
+            # SOL balance check
+            sol_balance = await asyncio.to_thread(
+                self.wallet_manager.get_balance, wallet_addr
+            ) or 0
+            
+            if amount > sol_balance:
+                keyboard = [
+                    [InlineKeyboardButton("❌ Cancel", callback_data="back_menu")],
+                ]
+                await msg.edit_text(
+                    f"❌ **Insufficient SOL Balance!**\n\n"
+                    f"Required: `{amount} SOL`\n"
+                    f"Available: `{sol_balance:.4f} SOL`\n\n"
+                    f"Please deposit more SOL or use a smaller amount.",
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode='Markdown'
+                )
+                return SWAP_AMOUNT
+        else:
+            # Token balance check
+            try:
+                token_bal = await token_manager.get_token_balance(wallet_addr, input_mint)
+                token_balance = token_bal.get('amount', 0) if token_bal else 0
+                
+                if token_balance <= 0:
+                    keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="back_menu")]]
+                    await msg.edit_text(
+                        f"❌ **No Token Balance!**\n\n"
+                        f"You don't own any **{in_label}** tokens.\n"
+                        f"Token: `{input_mint[:30]}...`\n\n"
+                        f"Please acquire some tokens first or select a different token.",
+                        reply_markup=InlineKeyboardMarkup(keyboard),
+                        parse_mode='Markdown'
+                    )
+                    return SWAP_AMOUNT
+                
+                if amount > token_balance:
+                    keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="back_menu")]]
+                    await msg.edit_text(
+                        f"❌ **Insufficient Token Balance!**\n\n"
+                        f"Required: `{amount} {in_label}`\n"
+                        f"Available: `{token_balance:.4f} {in_label}`\n\n"
+                        f"Please use a smaller amount.",
+                        reply_markup=InlineKeyboardMarkup(keyboard),
+                        parse_mode='Markdown'
+                    )
+                    return SWAP_AMOUNT
+            except Exception as e:
+                logger.warning(f"Token balance check failed: {e}")
+                # Continue without balance check if API fails
+        
+        # ── GET QUOTE ─────────────────────────────────────────────────────────
         quote = await swapper.get_jupiter_price(input_mint, output_mint, amount)
         if not quote:
             await msg.edit_text(
@@ -544,6 +784,57 @@ class TelegramBot:
             parse_mode='Markdown'
         )
         return CONFIRM_SWAP
+
+    async def confirm_custom_token_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle confirmation of custom token (input or output)."""
+        await update.callback_query.answer()
+        data = update.callback_query.data  # confirm_custom_input or confirm_custom_output
+        
+        addr = context.user_data.get('pending_token_address')
+        token_info = context.user_data.get('pending_token_info', {})
+        
+        if not addr:
+            await update.callback_query.edit_message_text("❌ Error: No token address found. Please restart.")
+            return MENU
+        
+        direction = context.user_data.get('sol_swap_direction', 'swap_sol_to_token')
+        
+        if data == "confirm_custom_input":
+            # Confirm as input token
+            context.user_data['sol_input_token'] = addr
+            context.user_data['sol_input_label'] = token_info.get('symbol', addr[:8])
+            
+            if direction == "swap_token_to_token":
+                # Need output token next
+                keyboard = self._sol_token_keyboard("soltok_out")
+                await update.callback_query.edit_message_text(
+                    f"✅ Input token set: **{token_info.get('symbol', addr[:8])}**\n\n"
+                    f"🔍 Now select the OUTPUT token:",
+                    reply_markup=keyboard,
+                    parse_mode='Markdown'
+                )
+                return SWAP_OUTPUT_TOKEN
+            else:
+                # SOL → token, proceed to amount
+                context.user_data['sol_output_token'] = addr
+                context.user_data['sol_output_label'] = token_info.get('symbol', addr[:8])
+                await update.callback_query.edit_message_text(
+                    f"💰 How much **SOL** to spend?\n(e.g. `0.5`)",
+                    parse_mode='Markdown'
+                )
+                return SWAP_AMOUNT
+        else:
+            # confirm_custom_output - Confirm as output token
+            context.user_data['sol_output_token'] = addr
+            context.user_data['sol_output_label'] = token_info.get('symbol', addr[:8])
+            
+            # Now ask for amount
+            in_label = context.user_data.get('sol_input_label', 'tokens')
+            await update.callback_query.edit_message_text(
+                f"💰 How many **{in_label}** to sell?\n(e.g. `100`)",
+                parse_mode='Markdown'
+            )
+            return SWAP_AMOUNT
 
     async def confirm_swap(self, update: Update,
                             context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1456,7 +1747,30 @@ class TelegramBot:
 
         try:
             user = db.get_user(user_id)
-            result = self.wallet_manager.send_sol(user['wallet_address'], to_address, amount)
+            
+            # Decrypt private key for signing
+            keypair = None
+            if user and user.get('encrypted_private_key'):
+                raw_key = decrypt_private_key(user['encrypted_private_key'])
+                if raw_key:
+                    keypair = self.wallet_manager.import_keypair(raw_key)
+            
+            if not keypair:
+                await update.callback_query.edit_message_text(
+                    "❌ **Could not load wallet key**\n\n"
+                    "Please re-import your wallet to enable sending.",
+                    parse_mode='Markdown'
+                )
+                await self.show_main_menu(update, context)
+                return MENU
+            
+            # Send SOL
+            result = self.wallet_manager.send_sol(
+                from_wallet_address=user['wallet_address'],
+                to_address=to_address,
+                amount=amount,
+                keypair=keypair
+            )
 
             if result and result.get('success'):
                 tx = result.get('tx_hash', result.get('signature', 'pending'))
@@ -1464,24 +1778,26 @@ class TelegramBot:
                     f"✅ **Sent!**\n\n"
                     f"Amount: `{amount} {unit}`\n"
                     f"To: `{to_address}`\n"
-                    f"TX: `{str(tx)[:40]}`",
+                    f"TX: `{str(tx)[:40]}...`\n\n"
+                    f"View on Solscan: https://solscan.io/tx/{tx}",
                     parse_mode='Markdown'
                 )
             else:
-                err = result.get('error', 'Unknown error') if result else 'Send not supported yet — use an external wallet.'
+                err = result.get('error', 'Unknown error') if result else 'Failed to send transaction'
                 await update.callback_query.edit_message_text(
-                    f"⚠️ **Could not send on-chain**\n\n"
+                    f"⚠️ **Send Failed**\n\n"
                     f"Reason: {err}\n\n"
-                    f"To send manually:\n"
-                    f"• Amount: `{amount} {unit}`\n"
-                    f"• To: `{to_address}`\n"
-                    f"Use your wallet app with the private key you saved at setup.",
+                    f"Please try again or check:\n"
+                    f"• Sufficient SOL balance\n"
+                    f"• Valid recipient address\n"
+                    f"• Network congestion",
                     parse_mode='Markdown'
                 )
         except Exception as e:
             logger.error(f"Send error: {e}")
             await update.callback_query.edit_message_text(
-                f"❌ Error: {e}\n\nUse an external wallet to complete this transfer.",
+                f"❌ **Error**: {str(e)}\n\n"
+                f"Please try again or use an external wallet.",
                 parse_mode='Markdown'
             )
 
@@ -1546,6 +1862,7 @@ class TelegramBot:
         keyboard = [
             [InlineKeyboardButton("🎯 Smart Trade Settings", callback_data="st_settings")],
             [InlineKeyboardButton("📊 Change Trade %", callback_data="smart_trade")],
+            [InlineKeyboardButton("🔑 View Private Key", callback_data="view_private_key")],
             [InlineKeyboardButton("🔑 Import Wallet", callback_data="import_key")],
             [InlineKeyboardButton("📥 My Addresses (Receive)", callback_data="receive")],
             [InlineKeyboardButton("⚠️ Risk Management", callback_data="risk_mgmt")],
@@ -1556,6 +1873,64 @@ class TelegramBot:
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode='Markdown'
         )
+        return MENU
+
+    async def view_private_key_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Display the user's decrypted private key with security warning."""
+        await update.callback_query.answer()
+        user_id = update.effective_user.id
+        user = db.get_user(user_id)
+        
+        if not user or not user.get('encrypted_private_key'):
+            keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="settings")]]
+            await update.callback_query.edit_message_text(
+                "❌ **No Private Key Found**\n\n"
+                "Your wallet doesn't have a stored private key.\n"
+                "You may need to re-import your wallet.",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode='Markdown'
+            )
+            return MENU
+        
+        try:
+            # Decrypt the private key
+            private_key = decrypt_private_key(user['encrypted_private_key'])
+            wallet_address = user.get('wallet_address', 'Unknown')
+            
+            if not private_key:
+                raise Exception("Failed to decrypt private key")
+            
+            keyboard = [
+                [InlineKeyboardButton("🔙 Back to Settings", callback_data="settings")],
+                [InlineKeyboardButton("🏠 Main Menu", callback_data="back_menu")],
+            ]
+            
+            await update.callback_query.edit_message_text(
+                "🔑 **Your Private Key**\n\n"
+                f"📮 Wallet: `{wallet_address}`\n\n"
+                f"🔐 Private Key (base58):\n"
+                f"```\n{private_key}\n```\n\n"
+                "⚠️ **SECURITY WARNING:**\n"
+                "• NEVER share this key with anyone!\n"
+                "• Store it in a secure location (password manager, hardware wallet, paper)\n"
+                "• Anyone with this key can steal ALL your funds\n"
+                "• The bot cannot recover it if you lose it\n\n"
+                "📋 _Tap and hold to copy_",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode='Markdown'
+            )
+        except Exception as e:
+            logger.error(f"Error decrypting private key for user {user_id}: {e}")
+            keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="settings")]]
+            await update.callback_query.edit_message_text(
+                f"❌ **Error Decrypting Key**\n\n"
+                f"Failed to decrypt your private key.\n"
+                f"Error: {str(e)}\n\n"
+                "Please contact support or re-import your wallet.",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode='Markdown'
+            )
+        
         return MENU
 
     async def st_settings_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1815,6 +2190,241 @@ class TelegramBot:
             parse_mode='Markdown'
         )
         return MENU
+
+    async def my_holdings_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Display all token holdings in user's wallet with current values."""
+        await update.callback_query.answer()
+        user_id = update.effective_user.id
+        user = db.get_user(user_id)
+        
+        if not user:
+            await update.callback_query.edit_message_text("❌ User not found.")
+            return MENU
+        
+        wallet_addr = user['wallet_address']
+        msg = await update.callback_query.edit_message_text("🔍 Scanning wallet for tokens...")
+        
+        try:
+            # Get SOL balance
+            sol_balance = await asyncio.to_thread(
+                self.wallet_manager.get_balance, wallet_addr
+            ) or 0
+            
+            # Get all SPL token balances
+            tokens = await token_manager.get_all_token_balances(wallet_addr)
+            
+            # Filter out zero balances and sort by value
+            holdings = []
+            for token in tokens:
+                if token.get('amount', 0) > 0:
+                    holdings.append(token)
+            
+            if not holdings and sol_balance == 0:
+                keyboard = [
+                    [InlineKeyboardButton("💱 Make First Swap", callback_data="swap")],
+                    [InlineKeyboardButton("🔙 Back", callback_data="back_menu")],
+                ]
+                await msg.edit_text(
+                    "📊 **My Holdings**\n\n"
+                    "Your wallet is currently empty.\n\n"
+                    "Use the swap feature to acquire your first tokens!",
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode='Markdown'
+                )
+                return MENU
+            
+            # Build holdings display
+            lines = ["📊 **My Holdings**\n\n"]
+            keyboard_rows = []
+            
+            # Show SOL balance first
+            if sol_balance > 0:
+                lines.append(f"🟣 **SOL**: `{sol_balance:.4f}`\n\n")
+            
+            # Show token holdings
+            if holdings:
+                lines.append("🪙 **Tokens:**\n")
+                for token in holdings[:15]:  # Limit to 15 tokens
+                    mint = token.get('mint', '')
+                    amount = token.get('amount', 0)
+                    decimals = token.get('decimals', 9)
+                    short_mint = f"{mint[:8]}...{mint[-6:]}" if len(mint) > 14 else mint
+                    
+                    lines.append(f"• `{amount:.4f}` tokens\n")
+                    lines.append(f"  Mint: `{short_mint}`\n")
+                    
+                    # Add sell and send buttons for each token (if not a tiny amount)
+                    if amount > 0.001:
+                        keyboard_rows.append([
+                            InlineKeyboardButton(
+                                f"💰 Sell ({amount:.2f})",
+                                callback_data=f"hold_sell_{mint}"
+                            ),
+                            InlineKeyboardButton(
+                                f"📤 Send",
+                                callback_data=f"hold_send_{mint}"
+                            )
+                        ])
+            
+            # Add action buttons
+            keyboard_rows.append([
+                InlineKeyboardButton("🔄 Refresh", callback_data="my_holdings"),
+                InlineKeyboardButton("🔙 Back", callback_data="back_menu"),
+            ])
+            
+            await msg.edit_text(
+                "".join(lines),
+                reply_markup=InlineKeyboardMarkup(keyboard_rows),
+                parse_mode='Markdown'
+            )
+            
+        except Exception as e:
+            logger.error(f"Error fetching holdings: {e}")
+            keyboard = [
+                [InlineKeyboardButton("🔄 Retry", callback_data="my_holdings")],
+                [InlineKeyboardButton("🔙 Back", callback_data="back_menu")],
+            ]
+            await msg.edit_text(
+                f"❌ **Error Loading Holdings**\n\n"
+                f"Failed to fetch token balances: {str(e)}\n\n"
+                f"Please try again or check your wallet on Solscan.",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode='Markdown'
+            )
+        
+        return HOLDINGS_VIEW
+
+    async def holdings_sell_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show sell confirmation for a specific token holding."""
+        await update.callback_query.answer()
+        user_id = update.effective_user.id
+        data = update.callback_query.data  # hold_sell_MINTADDRESS
+        
+        mint = data.replace("hold_sell_", "")
+        user = db.get_user(user_id)
+        
+        if not user:
+            await update.callback_query.edit_message_text("❌ User not found.")
+            return MENU
+        
+        wallet_addr = user['wallet_address']
+        
+        # Fetch token info and balance
+        msg = await update.callback_query.edit_message_text("🔍 Fetching token details...")
+        
+        try:
+            token_info = await self._fetch_token_info(mint)
+            token_bal = await token_manager.get_token_balance(wallet_addr, mint)
+            
+            if not token_bal or token_bal.get('amount', 0) <= 0:
+                await msg.edit_text(
+                    "❌ **No Balance Found**\n\n"
+                    f"You don't have any tokens in your wallet.\n"
+                    f"Token: `{mint[:30]}...`",
+                    parse_mode='Markdown'
+                )
+                return HOLDINGS_VIEW
+            
+            balance = token_bal.get('amount', 0)
+            symbol = token_info.get('symbol', mint[:8])
+            
+            # Store for confirmation
+            context.user_data['hold_sell_mint'] = mint
+            context.user_data['hold_sell_balance'] = balance
+            context.user_data['hold_sell_symbol'] = symbol
+            
+            keyboard = [
+                [InlineKeyboardButton("💰 Sell 25%", callback_data=f"hold_sell_pct_25")],
+                [InlineKeyboardButton("💰 Sell 50%", callback_data=f"hold_sell_pct_50")],
+                [InlineKeyboardButton("💰 Sell 100%", callback_data=f"hold_sell_pct_100")],
+                [InlineKeyboardButton("📝 Custom Amount", callback_data="hold_sell_custom")],
+                [InlineKeyboardButton("❌ Cancel", callback_data="my_holdings")],
+            ]
+            
+            await msg.edit_text(
+                f"💱 **Sell Tokens**\n\n"
+                f"Token: **{symbol}**\n"
+                f"Balance: `{balance:.6f}`\n"
+                f"Mint: `{mint[:30]}...`\n\n"
+                f"Select how much to sell:",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode='Markdown'
+            )
+            
+        except Exception as e:
+            logger.error(f"Error in holdings sell: {e}")
+            await msg.edit_text(
+                f"❌ **Error**\n\nFailed to fetch token info: {str(e)}",
+                parse_mode='Markdown'
+            )
+        
+        return HOLDINGS_SELL_CONFIRM
+
+    async def holdings_send_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show send screen for a specific token holding."""
+        await update.callback_query.answer()
+        user_id = update.effective_user.id
+        data = update.callback_query.data  # hold_send_MINTADDRESS
+        
+        mint = data.replace("hold_send_", "")
+        user = db.get_user(user_id)
+        
+        if not user:
+            await update.callback_query.edit_message_text("❌ User not found.")
+            return MENU
+        
+        wallet_addr = user['wallet_address']
+        
+        # Fetch token info and balance
+        msg = await update.callback_query.edit_message_text("🔍 Fetching token details...")
+        
+        try:
+            token_info = await self._fetch_token_info(mint)
+            token_bal = await token_manager.get_token_balance(wallet_addr, mint)
+            
+            if not token_bal or token_bal.get('amount', 0) <= 0:
+                await msg.edit_text(
+                    "❌ **No Balance Found**\n\n"
+                    f"You don't have any tokens in your wallet.\n"
+                    f"Token: `{mint[:30]}...`",
+                    parse_mode='Markdown'
+                )
+                return HOLDINGS_VIEW
+            
+            balance = token_bal.get('amount', 0)
+            symbol = token_info.get('symbol', mint[:8])
+            decimals = token_info.get('decimals', 9)
+            
+            # Store for send flow
+            context.user_data['hold_send_mint'] = mint
+            context.user_data['hold_send_balance'] = balance
+            context.user_data['hold_send_symbol'] = symbol
+            context.user_data['hold_send_decimals'] = decimals
+            context.user_data['send_step'] = 'token_address'
+            
+            keyboard = [
+                [InlineKeyboardButton("❌ Cancel", callback_data="my_holdings")],
+            ]
+            
+            await msg.edit_text(
+                f"📤 **Send {symbol}**\n\n"
+                f"Balance: `{balance:.6f} {symbol}`\n"
+                f"Mint: `{mint[:30]}...`\n\n"
+                f"⚠️ **Note:** SPL token transfers may require using\n"
+                f"an external wallet like Phantom for full support.\n\n"
+                f"Enter the **recipient Solana address**:",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode='Markdown'
+            )
+            
+        except Exception as e:
+            logger.error(f"Error in holdings send: {e}")
+            await msg.edit_text(
+                f"❌ **Error**\n\nFailed to fetch token info: {str(e)}",
+                parse_mode='Markdown'
+            )
+        
+        return SEND_AMOUNT
 
     async def copy_stats_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show copy trading performance stats."""
@@ -2929,6 +3539,7 @@ async def main():
                 CallbackQueryHandler(bot.analytics_callback, pattern="^analytics$"),
                 CallbackQueryHandler(bot.tools_callback, pattern="^tools$"),
                 CallbackQueryHandler(bot.settings_callback, pattern="^settings$"),
+                CallbackQueryHandler(bot.view_private_key_callback, pattern="^view_private_key$"),
                 CallbackQueryHandler(bot.st_settings_callback, pattern="^st_settings$"),
                 CallbackQueryHandler(bot.st_settings_action_callback, pattern="^sts_"),
                 CallbackQueryHandler(bot.admin_panel_callback, pattern="^admin_panel$"),
@@ -2939,6 +3550,7 @@ async def main():
                 CallbackQueryHandler(bot.add_sol_whale_callback, pattern="^add_sol_whale_"),
                 # Analytics sub-menu
                 CallbackQueryHandler(bot.active_positions_callback, pattern="^active_positions$"),
+                CallbackQueryHandler(bot.my_holdings_callback, pattern="^my_holdings$"),
                 CallbackQueryHandler(bot.daily_report_callback, pattern="^daily_report$"),
                 CallbackQueryHandler(bot.copy_stats_callback, pattern="^copy_stats$"),
                 # Risk management sub-menu
@@ -2975,6 +3587,7 @@ async def main():
             SWAP_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_swap_amount)],
             CONFIRM_SWAP: [
                 CallbackQueryHandler(bot.confirm_swap, pattern="^confirm_sol_swap_"),
+                CallbackQueryHandler(bot.confirm_custom_token_callback, pattern="^confirm_custom_(input|output)$"),
                 CallbackQueryHandler(bot.back_to_menu, pattern="^back_menu$"),
             ],
             SEND_AMOUNT: [
@@ -2983,6 +3596,16 @@ async def main():
                 CallbackQueryHandler(bot.back_to_menu, pattern="^back_menu$"),
             ],
             ADD_WALLET: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_watch_wallet)],
+            # ── Holdings view ────────────────────────────────────────────────
+            HOLDINGS_VIEW: [
+                CallbackQueryHandler(bot.holdings_sell_callback, pattern="^hold_sell_"),
+                CallbackQueryHandler(bot.holdings_send_callback, pattern="^hold_send_"),
+                CallbackQueryHandler(bot.my_holdings_callback, pattern="^my_holdings$"),
+                CallbackQueryHandler(bot.back_to_menu, pattern="^back_menu$"),
+            ],
+            HOLDINGS_SELL_CONFIRM: [
+                CallbackQueryHandler(bot.back_to_menu, pattern="^back_menu$"),
+            ],
             # ── Smart Trader v2 states ────────────────────────────────────────
             SMART_TRADE: [
                 CallbackQueryHandler(bot.st_manual_callback, pattern="^st_manual$"),
@@ -3061,10 +3684,12 @@ async def main():
             # Navigation that can happen from any state
             CallbackQueryHandler(bot.copy_trade_callback, pattern="^copy_trade$"),
             CallbackQueryHandler(bot.active_positions_callback, pattern="^active_positions$"),
+            CallbackQueryHandler(bot.my_holdings_callback, pattern="^my_holdings$"),
             CallbackQueryHandler(bot.analytics_callback, pattern="^analytics$"),
             CallbackQueryHandler(bot.risk_mgmt_callback, pattern="^risk_mgmt$"),
             CallbackQueryHandler(bot.tools_callback, pattern="^tools$"),
             CallbackQueryHandler(bot.settings_callback, pattern="^settings$"),
+            CallbackQueryHandler(bot.view_private_key_callback, pattern="^view_private_key$"),
             CallbackQueryHandler(bot.st_settings_callback, pattern="^st_settings$"),
             CallbackQueryHandler(bot.st_settings_action_callback, pattern="^sts_"),
             CallbackQueryHandler(bot.priority_fees_callback, pattern="^priority_fees$"),
@@ -3094,6 +3719,8 @@ async def main():
             CallbackQueryHandler(handle_sell_action, pattern="^cutloss_"),
             CallbackQueryHandler(handle_sell_action, pattern="^sell_aging_"),
             CallbackQueryHandler(confirm_sell_action, pattern="^confirm_sell_"),
+            # Allow /start command from any state
+            CommandHandler("start", bot.start),
             CommandHandler("cancel", bot.cancel)
         ]
     )
