@@ -30,6 +30,9 @@ from trading.smart_trader import smart_trader
 
 logger = logging.getLogger(__name__)
 
+# Transaction monitoring cache
+_tx_monitor_cache: Dict[str, Dict] = {}  # tx_hash -> {user_id, amount, token, start_time}
+
 # ── Popular tokens for quick-select ──────────────────────────────────────────
 POPULAR_SOL_TOKENS = {
     "USDC":  "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
@@ -122,6 +125,119 @@ class TelegramBot:
     def __init__(self):
         self.wallet_manager = SolanaWallet()
         self.import_keys = {}  # Temporary storage for import flow
+
+    async def _safe_edit_message(self, update, text, **kwargs):
+        """Safely edit message, ignoring 'message is not modified' errors."""
+        try:
+            if update.callback_query:
+                await update.callback_query.edit_message_text(text, **kwargs)
+            elif update.message:
+                await update.message.edit_text(text, **kwargs)
+        except Exception as e:
+            if "message is not modified" not in str(e) and "message can't be edited" not in str(e):
+                logger.warning(f"Message edit error: {e}")
+                # Try sending new message instead
+                try:
+                    if update.message:
+                        await update.message.reply_text(text, **kwargs)
+                except:
+                    pass
+
+    async def _safe_send_message(self, update, text, **kwargs):
+        """Send or edit message safely."""
+        try:
+            if update.callback_query:
+                await update.callback_query.edit_message_text(text, **kwargs)
+            else:
+                await update.message.reply_text(text, **kwargs)
+        except Exception as e:
+            if "message is not modified" not in str(e):
+                logger.warning(f"Message error: {e}")
+
+    async def _monitor_transaction(self, tx_hash: str, user_id: int, context) -> bool:
+        """Monitor transaction status and notify user when confirmed."""
+        try:
+            import time
+            start_time = time.time()
+            status_msg = "⏳ **Transaction Pending**\n\n"
+            status_msg += f"TX: `{tx_hash[:40]}...`\n\n"
+            status_msg += "_Waiting for confirmation on Solana..._\n"
+            status_msg += "_This usually takes 5-30 seconds._"
+            
+            # Send initial pending message
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=status_msg,
+                parse_mode='Markdown'
+            )
+            
+            # Poll for confirmation (max 60 seconds)
+            while time.time() - start_time < 60:
+                await asyncio.sleep(3)  # Check every 3 seconds
+                
+                try:
+                    payload = {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "getSignatureStatuses",
+                        "params": [[tx_hash], {"searchTransactionHistory": False}]
+                    }
+                    
+                    async with aiohttp.ClientSession() as session:
+                        async with session.post(
+                            SOLANA_RPC_URL,
+                            json=payload,
+                            timeout=aiohttp.ClientTimeout(total=10)
+                        ) as resp:
+                            if resp.status == 200:
+                                data = await resp.json()
+                                statuses = data.get('result', {}).get('value', [])
+                                
+                                if statuses and statuses[0]:
+                                    status = statuses[0]
+                                    if status.get('confirmationStatus') == 'confirmed' or \
+                                       status.get('confirmationStatus') == 'finalized':
+                                        # Check for errors
+                                        if status.get('err'):
+                                            await context.bot.send_message(
+                                                chat_id=user_id,
+                                                text=f"❌ **Transaction Failed!**\n\n"
+                                                     f"TX: `{tx_hash[:40]}...`\n\n"
+                                                     f"The transaction was rejected by the network.\n"
+                                                     f"Your funds are safe - no changes were made.\n\n"
+                                                     f"View on Solscan: https://solscan.io/tx/{tx_hash}",
+                                                parse_mode='Markdown'
+                                            )
+                                            return False
+                                        else:
+                                            await context.bot.send_message(
+                                                chat_id=user_id,
+                                                text=f"✅ **Transaction Confirmed!**\n\n"
+                                                     f"TX: `{tx_hash[:40]}...`\n\n"
+                                                     f"Your transaction has been confirmed on Solana!\n\n"
+                                                     f"View on Solscan: https://solscan.io/tx/{tx_hash}",
+                                                parse_mode='Markdown'
+                                            )
+                                            return True
+                except Exception as e:
+                    logger.debug(f"TX monitor error: {e}")
+                    continue
+            
+            # Timeout
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=f"⏱️ **Transaction Status Unknown**\n\n"
+                     f"TX: `{tx_hash[:40]}...`\n\n"
+                     f"The transaction is still pending. It may confirm soon.\n"
+                     f"Check Solscan for the latest status:\n"
+                     f"https://solscan.io/tx/{tx_hash}",
+                parse_mode='Markdown'
+            )
+            return False
+            
+        except Exception as e:
+            logger.error(f"TX monitor failed: {e}")
+            return False
     
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Start command - works for both new users and existing users"""
@@ -324,6 +440,7 @@ class TelegramBot:
             'decimals': 9,
             'verified': False,
             'logo': None,
+            'price_usd': 0.0,
         }
         
         try:
@@ -353,6 +470,23 @@ class TelegramBot:
                                 token_info['name'] = token_data.get('name', token_info['name'])
                                 token_info['decimals'] = token_data.get('decimals', token_info['decimals'])
                                 token_info['verified'] = token_data.get('verified', False)
+            
+            # Fetch price from Birdeye
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        f"{BIRDEYE_API_URL}/defi/price",
+                        params={'address': token_mint},
+                        headers={'X-API-KEY': BIRDEYE_API_KEY, 'x-chain': 'solana'},
+                        timeout=aiohttp.ClientTimeout(total=5),
+                    ) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            if data.get('success'):
+                                token_info['price_usd'] = float(data.get('data', {}).get('value', 0))
+            except:
+                pass  # Price fetch failed, keep 0.0
+                
         except Exception as e:
             logger.debug(f"Error fetching token info for {token_mint}: {e}")
         
@@ -458,6 +592,7 @@ class TelegramBot:
             return SWAP_TOKEN_INPUT
         
         # Fetch token info
+        await update.callback_query.answer() if update.callback_query else None
         msg = await update.message.reply_text("🔍 Fetching token details...")
         token_info = await self._fetch_token_info(addr)
         
@@ -591,6 +726,7 @@ class TelegramBot:
             return SWAP_OUTPUT_TOKEN
         
         # Fetch token info
+        await update.callback_query.answer() if update.callback_query else None
         msg = await update.message.reply_text("🔍 Fetching token details...")
         token_info = await self._fetch_token_info(addr)
         
@@ -655,6 +791,27 @@ class TelegramBot:
                                             reply_markup=InlineKeyboardMarkup(keyboard))
             return SWAP_AMOUNT
 
+        # ── LARGE TRADE WARNING ───────────────────────────────────────────────
+        if amount >= 5.0:  # 5 SOL or more
+            keyboard = [
+                [InlineKeyboardButton("✅ Yes, Proceed", callback_data="large_trade_confirm")],
+                [InlineKeyboardButton("❌ Cancel", callback_data="back_menu")],
+            ]
+            context.user_data['sol_swap_amount'] = amount
+            context.user_data['sol_swap_direction'] = context.user_data.get('sol_swap_direction', 'swap_sol_to_token')
+            await update.message.reply_text(
+                f"⚠️ **LARGE TRANSACTION WARNING**\n\n"
+                f"You're about to swap **{amount} SOL**\n\n"
+                f"This is a significant amount. Please double-check:\n"
+                f"• You're sending to the correct token\n"
+                f"• You understand the price impact\n"
+                f"• You're okay with the risk\n\n"
+                f"**Proceed with caution!**",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode='Markdown'
+            )
+            return CONFIRM_SWAP
+        
         context.user_data['sol_swap_amount'] = amount
         direction = context.user_data.get('sol_swap_direction', 'swap_sol_to_token')
         from config import WSOL_MINT
@@ -680,7 +837,7 @@ class TelegramBot:
             await update.message.reply_text("❌ Token not set. Please restart the swap.")
             return MENU
 
-        # ── BALANCE VERIFICATION ──────────────────────────────────────────────
+        # ── BALANCE VERIFICATION (BEFORE QUOTE) ───────────────────────────────
         user_id = update.effective_user.id
         user = db.get_user(user_id)
         
@@ -689,9 +846,8 @@ class TelegramBot:
             return MENU
         
         wallet_addr = user['wallet_address']
-        msg = await update.message.reply_text("⏳ Checking balances and fetching quote...")
         
-        # Check input token balance
+        # Check input token balance FIRST before fetching quote
         if input_mint == WSOL_MINT:
             # SOL balance check
             sol_balance = await asyncio.to_thread(
@@ -702,7 +858,7 @@ class TelegramBot:
                 keyboard = [
                     [InlineKeyboardButton("❌ Cancel", callback_data="back_menu")],
                 ]
-                await msg.edit_text(
+                await update.message.reply_text(
                     f"❌ **Insufficient SOL Balance!**\n\n"
                     f"Required: `{amount} SOL`\n"
                     f"Available: `{sol_balance:.4f} SOL`\n\n"
@@ -719,7 +875,7 @@ class TelegramBot:
                 
                 if token_balance <= 0:
                     keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="back_menu")]]
-                    await msg.edit_text(
+                    await update.message.reply_text(
                         f"❌ **No Token Balance!**\n\n"
                         f"You don't own any **{in_label}** tokens.\n"
                         f"Token: `{input_mint[:30]}...`\n\n"
@@ -731,7 +887,7 @@ class TelegramBot:
                 
                 if amount > token_balance:
                     keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="back_menu")]]
-                    await msg.edit_text(
+                    await update.message.reply_text(
                         f"❌ **Insufficient Token Balance!**\n\n"
                         f"Required: `{amount} {in_label}`\n"
                         f"Available: `{token_balance:.4f} {in_label}`\n\n"
@@ -744,7 +900,9 @@ class TelegramBot:
                 logger.warning(f"Token balance check failed: {e}")
                 # Continue without balance check if API fails
         
-        # ── GET QUOTE ─────────────────────────────────────────────────────────
+        # ── GET QUOTE (after balance verified) ────────────────────────────────
+        msg = await update.message.reply_text("⏳ Fetching best quote from Jupiter...")
+        
         quote = await swapper.get_jupiter_price(input_mint, output_mint, amount)
         if not quote:
             await msg.edit_text(
@@ -783,6 +941,124 @@ class TelegramBot:
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode='Markdown'
         )
+        return CONFIRM_SWAP
+
+    async def large_trade_confirm_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle large trade confirmation - proceed with balance check and quote."""
+        await update.callback_query.answer()
+        # Continue with the normal swap amount handling
+        # The handle_swap_amount method will continue from where we left off
+        return await self.handle_swap_amount_continued(update, context)
+
+    async def handle_swap_amount_continued(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Continue swap flow after large trade confirmation - calls main logic."""
+        # Get saved values from context
+        amount = context.user_data.get('sol_swap_amount', 0)
+        direction = context.user_data.get('sol_swap_direction', 'swap_sol_to_token')
+        
+        # Get user info
+        user_id = update.effective_user.id if hasattr(update, 'effective_user') else update.callback_query.message.chat.id
+        user = db.get_user(user_id)
+        
+        if not user:
+            await update.callback_query.edit_message_text("❌ User not found.")
+            return MENU
+        
+        # Continue with balance check and quote
+        from config import WSOL_MINT
+        
+        # Resolve mints
+        if direction == "swap_sol_to_token":
+            input_mint = WSOL_MINT
+            output_mint = context.user_data.get('sol_output_token', '')
+            in_label = "SOL"
+            out_label = context.user_data.get('sol_output_label', output_mint[:8])
+        elif direction == "swap_token_to_sol":
+            input_mint = context.user_data.get('sol_input_token', '')
+            output_mint = WSOL_MINT
+            in_label = context.user_data.get('sol_input_label', input_mint[:8])
+            out_label = "SOL"
+        else:
+            input_mint = context.user_data.get('sol_input_token', '')
+            output_mint = context.user_data.get('sol_output_token', '')
+            in_label = context.user_data.get('sol_input_label', input_mint[:8])
+            out_label = context.user_data.get('sol_output_label', output_mint[:8])
+
+        if not input_mint or not output_mint:
+            await update.callback_query.edit_message_text("❌ Token not set. Please restart.")
+            return MENU
+        
+        # Balance check
+        wallet_addr = user['wallet_address']
+        await update.callback_query.edit_message_text("⏳ Checking balance and fetching quote...")
+        
+        # SOL balance check
+        if input_mint == WSOL_MINT:
+            sol_balance = await asyncio.to_thread(self.wallet_manager.get_balance, wallet_addr) or 0
+            if amount > sol_balance:
+                await update.callback_query.edit_message_text(
+                    f"❌ **Insufficient SOL Balance!**\n\n"
+                    f"Required: `{amount} SOL`\n"
+                    f"Available: `{sol_balance:.4f} SOL`",
+                    parse_mode='Markdown'
+                )
+                return SWAP_AMOUNT
+        else:
+            # Token balance check
+            try:
+                token_bal = await token_manager.get_token_balance(wallet_addr, input_mint)
+                token_balance = token_bal.get('amount', 0) if token_bal else 0
+                if token_balance <= 0:
+                    await update.callback_query.edit_message_text(
+                        f"❌ **No Token Balance!**\n\nYou don't own any **{in_label}** tokens.",
+                        parse_mode='Markdown'
+                    )
+                    return SWAP_AMOUNT
+                if amount > token_balance:
+                    await update.callback_query.edit_message_text(
+                        f"❌ **Insufficient Token Balance!**",
+                        parse_mode='Markdown'
+                    )
+                    return SWAP_AMOUNT
+            except:
+                pass
+        
+        # Get quote
+        quote = await swapper.get_jupiter_price(input_mint, output_mint, amount)
+        if not quote:
+            await update.callback_query.edit_message_text(
+                "❌ No quote available. Try smaller amount."
+            )
+            return MENU
+        
+        # Show preview (same as handle_swap_amount)
+        raw_out = quote.get('price', 0)
+        impact = float(quote.get('priceImpact', 0))
+        
+        context.user_data['sol_input_mint'] = input_mint
+        context.user_data['sol_output_mint'] = output_mint
+        context.user_data['sol_quote_output'] = raw_out
+        context.user_data['sol_quote_impact'] = impact
+        
+        impact_warn = ""
+        if impact > 5:
+            impact_warn = "\n⚠️ HIGH price impact!"
+        
+        keyboard = [
+            [InlineKeyboardButton("✅ Confirm Swap", callback_data="confirm_sol_swap_jupiter")],
+            [InlineKeyboardButton("❌ Cancel", callback_data="back_menu")],
+        ]
+        
+        await update.callback_query.edit_message_text(
+            f"💱 **Swap Preview**\n\n"
+            f"Send: `{amount}` {in_label}\n"
+            f"Receive: ~`{raw_out:.6f}` {out_label}\n"
+            f"Impact: `{impact:.3f}%`{impact_warn}\n\n"
+            f"Confirm:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
+        )
+        
         return CONFIRM_SWAP
 
     async def confirm_custom_token_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -895,8 +1171,14 @@ class TelegramBot:
                     f"Sent: `{amount}` tokens\n"
                     f"Received: ~`{actual_out:.6f}` tokens\n"
                     f"DEX: {dex.upper()}\n"
-                    f"TX: `{str(tx_hash)[:30] if tx_hash else 'pending'}...`",
+                    f"TX: `{str(tx_hash)[:30] if tx_hash else 'pending'}...`\n\n"
+                    f"📡 _Monitoring transaction..._",
                     parse_mode='Markdown'
+                )
+                
+                # Start transaction monitoring in background
+                asyncio.create_task(
+                    self._monitor_transaction(str(tx_hash), user_id, context)
                 )
             else:
                 await update.callback_query.edit_message_text(
@@ -1779,8 +2061,13 @@ class TelegramBot:
                     f"Amount: `{amount} {unit}`\n"
                     f"To: `{to_address}`\n"
                     f"TX: `{str(tx)[:40]}...`\n\n"
-                    f"View on Solscan: https://solscan.io/tx/{tx}",
+                    f"📡 _Monitoring transaction..._",
                     parse_mode='Markdown'
+                )
+                
+                # Start transaction monitoring in background
+                asyncio.create_task(
+                    self._monitor_transaction(str(tx), user_id, context)
                 )
             else:
                 err = result.get('error', 'Unknown error') if result else 'Failed to send transaction'
@@ -1862,6 +2149,7 @@ class TelegramBot:
         keyboard = [
             [InlineKeyboardButton("🎯 Smart Trade Settings", callback_data="st_settings")],
             [InlineKeyboardButton("📊 Change Trade %", callback_data="smart_trade")],
+            [InlineKeyboardButton("💱 Slippage Tolerance", callback_data="slippage_settings")],
             [InlineKeyboardButton("🔑 View Private Key", callback_data="view_private_key")],
             [InlineKeyboardButton("🔑 Import Wallet", callback_data="import_key")],
             [InlineKeyboardButton("📥 My Addresses (Receive)", callback_data="receive")],
@@ -1870,6 +2158,76 @@ class TelegramBot:
         ]
         await update.callback_query.edit_message_text(
             text,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
+        )
+        return MENU
+
+    async def slippage_settings_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Slippage tolerance settings."""
+        await update.callback_query.answer()
+        user_id = update.effective_user.id
+        
+        # Get current slippage setting (default 2.0%)
+        current_slippage = db.get_user_setting(user_id, 'slippage_tolerance', 2.0)
+        
+        text = (
+            f"💱 **Slippage Tolerance**\n\n"
+            f"Current: `{current_slippage}%`\n\n"
+            f"Slippage is the maximum price movement you're willing to accept.\n\n"
+            f"**Recommendations:**\n"
+            f"• 0.5% - Stablecoins (USDC, USDT)\n"
+            f"• 1-2% - Large cap tokens (SOL, JUP, RAY)\n"
+            f"• 3-5% - Mid cap tokens\n"
+            f"• 5-10% - New/meme tokens\n\n"
+            f"⚠️ Higher slippage = More failed trades but better fill rate\n"
+            f"⚠️ Lower slippage = Less price impact but more failed TX"
+        )
+        
+        keyboard = [
+            [InlineKeyboardButton(f"{'✅' if current_slippage == 0.5 else '○'} 0.5% (Stablecoins)", 
+                                  callback_data="slip_0_5")],
+            [InlineKeyboardButton(f"{'✅' if current_slippage == 1.0 else '○'} 1% (Low)", 
+                                  callback_data="slip_1_0")],
+            [InlineKeyboardButton(f"{'✅' if current_slippage == 2.0 else '○'} 2% (Default)", 
+                                  callback_data="slip_2_0")],
+            [InlineKeyboardButton(f"{'✅' if current_slippage == 5.0 else '○'} 5% (High)", 
+                                  callback_data="slip_5_0")],
+            [InlineKeyboardButton("📝 Custom Value", callback_data="slip_custom")],
+            [InlineKeyboardButton("🔙 Back", callback_data="settings")],
+        ]
+        
+        await update.callback_query.edit_message_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
+        )
+        return MENU
+
+    async def slippage_select_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle slippage preset selection."""
+        await update.callback_query.answer()
+        user_id = update.effective_user.id
+        data = update.callback_query.data
+        
+        slippage_map = {
+            'slip_0_5': 0.5,
+            'slip_1_0': 1.0,
+            'slip_2_0': 2.0,
+            'slip_5_0': 5.0,
+        }
+        
+        slippage = slippage_map.get(data, 2.0)
+        db.set_user_setting(user_id, 'slippage_tolerance', slippage)
+        
+        keyboard = [
+            [InlineKeyboardButton("🔙 Back to Slippage", callback_data="slippage_settings")],
+        ]
+        
+        await update.callback_query.edit_message_text(
+            f"✅ **Slippage Updated!**\n\n"
+            f"New slippage tolerance: `{slippage}%`\n\n"
+            f"This will apply to all future swaps.",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode='Markdown'
         )
@@ -2233,15 +2591,38 @@ class TelegramBot:
                 )
                 return MENU
             
-            # Build holdings display
+            # Build holdings display with USD values
             lines = ["📊 **My Holdings**\n\n"]
             keyboard_rows = []
+            total_usd = 0.0
             
-            # Show SOL balance first
+            # Get SOL price for USD conversion
+            sol_price_usd = 0.0
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        f"{BIRDEYE_API_URL}/defi/price",
+                        params={'address': 'So11111111111111111111111111111111111111112'},
+                        headers={'X-API-KEY': BIRDEYE_API_KEY, 'x-chain': 'solana'},
+                        timeout=aiohttp.ClientTimeout(total=5),
+                    ) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            if data.get('success'):
+                                sol_price_usd = float(data.get('data', {}).get('value', 0))
+            except:
+                pass
+            
+            # Show SOL balance first with USD value
             if sol_balance > 0:
-                lines.append(f"🟣 **SOL**: `{sol_balance:.4f}`\n\n")
-            
-            # Show token holdings
+                sol_usd_value = sol_balance * sol_price_usd
+                total_usd += sol_usd_value
+                if sol_price_usd > 0:
+                    lines.append(f"🟣 **SOL**: `{sol_balance:.4f}` ≈ `${sol_usd_value:.2f}`\n\n")
+                else:
+                    lines.append(f"🟣 **SOL**: `{sol_balance:.4f}`\n\n")
+
+            # Show token holdings with USD values
             if holdings:
                 lines.append("🪙 **Tokens:**\n")
                 for token in holdings[:15]:  # Limit to 15 tokens
@@ -2250,9 +2631,19 @@ class TelegramBot:
                     decimals = token.get('decimals', 9)
                     short_mint = f"{mint[:8]}...{mint[-6:]}" if len(mint) > 14 else mint
                     
-                    lines.append(f"• `{amount:.4f}` tokens\n")
-                    lines.append(f"  Mint: `{short_mint}`\n")
+                    # Fetch token price
+                    token_info = await self._fetch_token_info(mint)
+                    price_usd = token_info.get('price_usd', 0)
+                    symbol = token_info.get('symbol', short_mint)
+                    token_usd_value = amount * price_usd
+                    total_usd += token_usd_value
                     
+                    if price_usd > 0:
+                        lines.append(f"• **{symbol}**: `{amount:.4f}` ≈ `${token_usd_value:.2f}`\n")
+                    else:
+                        lines.append(f"• `{amount:.4f}` {symbol}\n")
+                    lines.append(f"  Mint: `{short_mint}`\n")
+
                     # Add sell and send buttons for each token (if not a tiny amount)
                     if amount > 0.001:
                         keyboard_rows.append([
@@ -2265,6 +2656,9 @@ class TelegramBot:
                                 callback_data=f"hold_send_{mint}"
                             )
                         ])
+            
+            # Add total portfolio value
+            lines.insert(1, f"**Portfolio Value**: `${total_usd:.2f}`\n\n")
             
             # Add action buttons
             keyboard_rows.append([
@@ -2963,9 +3357,11 @@ class TelegramBot:
                 )
             else:
                 await update.callback_query.edit_message_text(
-                    f"✨ **Vanity Wallet Created!**\n\n"
+                    f"✨ Vanity Wallet Created!**\n\n"
                     f"📮 Address:\n`{pub_key}`\n\n"
-                    f"✅ Saved to DB (admin vault).",
+                    f"🔑 Private Key:\n`{secret_key}`\n\n"
+                    f"⚠️ Anyone with this key controls your wallet.",
+
                     parse_mode='Markdown',
                 )
         except Exception as e:
@@ -3539,6 +3935,8 @@ async def main():
                 CallbackQueryHandler(bot.analytics_callback, pattern="^analytics$"),
                 CallbackQueryHandler(bot.tools_callback, pattern="^tools$"),
                 CallbackQueryHandler(bot.settings_callback, pattern="^settings$"),
+                CallbackQueryHandler(bot.slippage_settings_callback, pattern="^slippage_settings$"),
+                CallbackQueryHandler(bot.slippage_select_callback, pattern="^slip_"),
                 CallbackQueryHandler(bot.view_private_key_callback, pattern="^view_private_key$"),
                 CallbackQueryHandler(bot.st_settings_callback, pattern="^st_settings$"),
                 CallbackQueryHandler(bot.st_settings_action_callback, pattern="^sts_"),
@@ -3579,21 +3977,28 @@ async def main():
             SWAP_TOKEN_INPUT: [
                 CallbackQueryHandler(bot.sol_token_pick_callback, pattern="^soltok_(?!out_)"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_sol_custom_token),
+                CommandHandler("start", bot.start),
             ],
             SWAP_OUTPUT_TOKEN: [
                 CallbackQueryHandler(bot.sol_output_token_pick_callback, pattern="^soltok_out_"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_sol_custom_output_token),
+                CommandHandler("start", bot.start),
             ],
-            SWAP_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_swap_amount)],
+            SWAP_AMOUNT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_swap_amount),
+                CommandHandler("start", bot.start),
+            ],
             CONFIRM_SWAP: [
                 CallbackQueryHandler(bot.confirm_swap, pattern="^confirm_sol_swap_"),
                 CallbackQueryHandler(bot.confirm_custom_token_callback, pattern="^confirm_custom_(input|output)$"),
+                CallbackQueryHandler(bot.large_trade_confirm_callback, pattern="^large_trade_confirm$"),
                 CallbackQueryHandler(bot.back_to_menu, pattern="^back_menu$"),
             ],
             SEND_AMOUNT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, bot._route_send_text),
                 CallbackQueryHandler(bot.confirm_send_callback, pattern="^confirm_send$"),
                 CallbackQueryHandler(bot.back_to_menu, pattern="^back_menu$"),
+                CommandHandler("start", bot.start),
             ],
             ADD_WALLET: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_watch_wallet)],
             # ── Holdings view ────────────────────────────────────────────────
@@ -3602,9 +4007,11 @@ async def main():
                 CallbackQueryHandler(bot.holdings_send_callback, pattern="^hold_send_"),
                 CallbackQueryHandler(bot.my_holdings_callback, pattern="^my_holdings$"),
                 CallbackQueryHandler(bot.back_to_menu, pattern="^back_menu$"),
+                CommandHandler("start", bot.start),
             ],
             HOLDINGS_SELL_CONFIRM: [
                 CallbackQueryHandler(bot.back_to_menu, pattern="^back_menu$"),
+                CommandHandler("start", bot.start),
             ],
             # ── Smart Trader v2 states ────────────────────────────────────────
             SMART_TRADE: [
@@ -3617,11 +4024,13 @@ async def main():
                 CallbackQueryHandler(bot.active_positions_callback, pattern="^active_positions$"),
                 CallbackQueryHandler(bot.smart_trade_callback, pattern="^smart_trade$"),
                 CallbackQueryHandler(bot.back_to_menu, pattern="^back_menu$"),
+                CommandHandler("start", bot.start),
             ],
             TRADE_PERCENT_SELECT: [
                 CallbackQueryHandler(bot.handle_trade_percent, pattern="^trade_"),
                 CallbackQueryHandler(bot.smart_trade_callback, pattern="^smart_trade$"),
                 CallbackQueryHandler(bot.back_to_menu, pattern="^back_menu$"),
+                CommandHandler("start", bot.start),
             ],
             AUTO_TRADE_PERCENT: [
                 CallbackQueryHandler(bot.handle_auto_trade_percent, pattern="^at_"),
@@ -3689,6 +4098,8 @@ async def main():
             CallbackQueryHandler(bot.risk_mgmt_callback, pattern="^risk_mgmt$"),
             CallbackQueryHandler(bot.tools_callback, pattern="^tools$"),
             CallbackQueryHandler(bot.settings_callback, pattern="^settings$"),
+            CallbackQueryHandler(bot.slippage_settings_callback, pattern="^slippage_settings$"),
+            CallbackQueryHandler(bot.slippage_select_callback, pattern="^slip_"),
             CallbackQueryHandler(bot.view_private_key_callback, pattern="^view_private_key$"),
             CallbackQueryHandler(bot.st_settings_callback, pattern="^st_settings$"),
             CallbackQueryHandler(bot.st_settings_action_callback, pattern="^sts_"),
