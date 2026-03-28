@@ -52,12 +52,15 @@ POPULAR_SOL_TOKENS = {
 # Cache: (timestamp, list_of_dicts) — refreshed every hour
 _whale_cache: tuple = (0.0, [])
 
-async def fetch_top_traders(limit: int = 20) -> list:
+async def fetch_top_traders(limit: int = 10) -> list:
     """Fetch top Solana traders from Birdeye leaderboard.
 
     Returns a list of dicts: {address, pnl_usd, volume_usd, trade_count}
     sorted by 24-hour PnL descending.
     Falls back to an empty list on API failure.
+    
+    Note: Birdeye API expects 'period' param (not 'type') and returns 
+    'pnl', 'trade_count' (not 'PnL', 'trade'). Limit must be 1-10.
     """
     import time as _time
     global _whale_cache
@@ -70,11 +73,8 @@ async def fetch_top_traders(limit: int = 20) -> list:
             async with session.get(
                 f"{BIRDEYE_API_URL}/trader/gainers-losers",
                 params={
-                    "type":   "24h",
-                    "sort_by": "PnL",
-                    "sort_type": "desc",
-                    "offset": 0,
-                    "limit":  limit,
+                    "period": "24h",
+                    "limit":  min(limit, 10),  # API limit: 1-10
                 },
                 headers={"X-API-KEY": BIRDEYE_API_KEY, "x-chain": "solana"},
                 timeout=aiohttp.ClientTimeout(total=JUPITER_QUOTE_TIMEOUT),
@@ -85,9 +85,9 @@ async def fetch_top_traders(limit: int = 20) -> list:
                     traders = [
                         {
                             "address":     t.get("address", ""),
-                            "pnl_usd":     float(t.get("PnL", 0) or 0),
+                            "pnl_usd":     float(t.get("pnl", 0) or 0),
                             "volume_usd":  float(t.get("volume", 0) or 0),
-                            "trade_count": int(t.get("trade", 0) or 0),
+                            "trade_count": int(t.get("trade_count", 0) or 0),
                         }
                         for t in items
                         if t.get("address")
@@ -1810,7 +1810,7 @@ class TelegramBot:
 
         # Fetch top traders + user's current watch list
         traders, watched = await asyncio.gather(
-            fetch_top_traders(limit=20),
+            fetch_top_traders(limit=10),  # API max: 10
             asyncio.to_thread(db.get_watched_wallets, user_id),
         )
         watched_addrs = {w['wallet_address'] for w in watched}
