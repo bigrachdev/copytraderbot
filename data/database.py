@@ -552,7 +552,7 @@ class Database:
         conn.close()
 
     # Watched wallet operations
-    def add_watched_wallet(self, user_identifier: int, wallet_address: str,
+    def add_watched_wallet(self, telegram_id: int, wallet_address: str,
                            alias: str = None, copy_scale: float = 1.0,
                            copy_delay_seconds: int = 0,
                            max_loss_percent: float = 20.0,
@@ -561,7 +561,7 @@ class Database:
         """Add watched wallet for copy trading
         
         Args:
-            user_identifier: Can be either telegram_id OR internal user_id
+            telegram_id: Telegram user ID (from update.effective_user.id)
             wallet_address: Wallet address to watch
             alias: Optional alias for the wallet
             copy_scale: Copy trading scale multiplier
@@ -571,29 +571,12 @@ class Database:
             chain: Blockchain (default: 'solana')
         """
         try:
-            # Determine if this is a telegram_id or internal user_id
-            # Internal user_ids are typically small integers (1, 2, 3...)
-            # Telegram IDs are large integers (often 10+ digits)
-            user = self.get_user(user_identifier)
-            if user:
-                # It's a telegram_id, use the internal user_id
-                user_id = user['user_id']
-            else:
-                # It might already be an internal user_id, verify it exists
-                conn_check = self.get_connection()
-                cursor_check = conn_check.cursor()
-                if self.use_postgres:
-                    cursor_check.execute('SELECT user_id FROM users WHERE user_id = %s', (user_identifier,))
-                else:
-                    cursor_check.execute('SELECT user_id FROM users WHERE user_id = ?', (user_identifier,))
-                result = cursor_check.fetchone()
-                conn_check.close()
-                
-                if result:
-                    user_id = user_identifier
-                else:
-                    logger.error(f"Cannot add watched wallet: user {user_identifier} not found")
-                    return False
+            # Get internal user_id from telegram_id
+            user = self.get_user(telegram_id)
+            if not user:
+                logger.error(f"Cannot add watched wallet: user {telegram_id} not found")
+                return False
+            user_id = user['user_id']
             
             conn = self.get_connection()
             cursor = conn.cursor()
@@ -612,7 +595,7 @@ class Database:
             
             if cursor.fetchone():
                 conn.close()
-                logger.warning(f"Wallet {wallet_address[:16]}... already being watched by user {user_identifier}")
+                logger.warning(f"Wallet {wallet_address[:16]}... already being watched by user {telegram_id}")
                 return False
             
             if self.use_postgres:
@@ -711,20 +694,17 @@ class Database:
         conn.close()
         return True
 
-    def get_watched_wallets(self, user_identifier: int) -> List[Dict]:
+    def get_watched_wallets(self, telegram_id: int) -> List[Dict]:
         """Get all watched wallets for user
         
         Args:
-            user_identifier: Can be either telegram_id OR internal user_id
+            telegram_id: Telegram user ID (from update.effective_user.id)
         """
-        # Determine if this is a telegram_id or internal user_id
-        user = self.get_user(user_identifier)
-        if user:
-            # It's a telegram_id, use the internal user_id
-            user_id = user['user_id']
-        else:
-            # It might already be an internal user_id
-            user_id = user_identifier
+        # Get internal user_id from telegram_id
+        user = self.get_user(telegram_id)
+        if not user:
+            return []
+        user_id = user['user_id']
         
         conn = self.get_connection()
         cursor = conn.cursor()
@@ -753,13 +733,21 @@ class Database:
         return True
 
     # Trade history operations
-    def add_trade(self, user_id: int, input_mint: str, output_mint: str,
+    def add_trade(self, user_identifier: int, input_mint: str, output_mint: str,
                   input_amount: float, output_amount: float, dex: str,
                   price: float, slippage: float, tx_hash: str,
                   watched_wallet: str = None, is_copy: bool = False,
                   chain: str = 'solana') -> bool:
-        """Record trade"""
+        """Record trade
+        
+        Args:
+            user_identifier: Can be telegram_id or internal user_id
+        """
         try:
+            # Convert telegram_id to internal user_id if needed
+            user = self.get_user(user_identifier)
+            user_id = user['user_id'] if user else user_identifier
+            
             conn = self.get_connection()
             cursor = conn.cursor()
             if self.use_postgres:
@@ -785,8 +773,16 @@ class Database:
             logger.error(f"Error adding trade: {e}")
             return False
 
-    def get_user_trades(self, user_id: int, limit: int = 20) -> List[Dict]:
-        """Get recent trades for user"""
+    def get_user_trades(self, user_identifier: int, limit: int = 20) -> List[Dict]:
+        """Get recent trades for user
+        
+        Args:
+            user_identifier: Can be telegram_id or internal user_id
+        """
+        # Convert telegram_id to internal user_id if needed
+        user = self.get_user(user_identifier)
+        user_id = user['user_id'] if user else user_identifier
+        
         conn = self.get_connection()
         cursor = conn.cursor()
         if self.use_postgres:
@@ -803,8 +799,16 @@ class Database:
         conn.close()
         return trades
 
-    def get_user_stats(self, user_id: int) -> Dict:
-        """Get trading statistics"""
+    def get_user_stats(self, user_identifier: int) -> Dict:
+        """Get trading statistics
+        
+        Args:
+            user_identifier: Can be telegram_id or internal user_id
+        """
+        # Convert telegram_id to internal user_id if needed
+        user = self.get_user(user_identifier)
+        user_id = user['user_id'] if user else user_identifier
+        
         conn = self.get_connection()
         cursor = conn.cursor()
 
@@ -1061,11 +1065,19 @@ class Database:
 
     # Smart trading methods
 
-    def add_pending_trade(self, user_id: int, token_address: str, token_amount: float,
+    def add_pending_trade(self, user_identifier: int, token_address: str, token_amount: float,
                          sol_spent: float, entry_price: float, dex: str,
                          swap_signature: str) -> bool:
-        """Record a pending smart trade"""
+        """Record a pending smart trade
+        
+        Args:
+            user_identifier: Can be telegram_id or internal user_id
+        """
         try:
+            # Convert telegram_id to internal user_id if needed
+            user = self.get_user(user_identifier)
+            user_id = user['user_id'] if user else user_identifier
+            
             conn = self.get_connection()
             cursor = conn.cursor()
             if self.use_postgres:
@@ -1088,9 +1100,17 @@ class Database:
             logger.error(f"Error recording pending trade: {e}")
             return False
 
-    def get_pending_trade_by_token(self, user_id: int, token_address: str) -> Optional[Dict]:
-        """Get pending trade for token"""
+    def get_pending_trade_by_token(self, user_identifier: int, token_address: str) -> Optional[Dict]:
+        """Get pending trade for token
+        
+        Args:
+            user_identifier: Can be telegram_id or internal user_id
+        """
         try:
+            # Convert telegram_id to internal user_id if needed
+            user = self.get_user(user_identifier)
+            user_id = user['user_id'] if user else user_identifier
+            
             conn = self.get_connection()
             cursor = conn.cursor()
             if self.use_postgres:
@@ -1112,10 +1132,18 @@ class Database:
             logger.error(f"Error getting pending trade: {e}")
             return None
 
-    def update_pending_trade_closed(self, user_id: int, token_address: str,
+    def update_pending_trade_closed(self, user_identifier: int, token_address: str,
                                    sol_received: float, exit_tx: str) -> bool:
-        """Mark trade as closed after exit"""
+        """Mark trade as closed after exit
+        
+        Args:
+            user_identifier: Can be telegram_id or internal user_id
+        """
         try:
+            # Convert telegram_id to internal user_id if needed
+            user = self.get_user(user_identifier)
+            user_id = user['user_id'] if user else user_identifier
+            
             conn = self.get_connection()
             cursor = conn.cursor()
 
@@ -1138,7 +1166,7 @@ class Database:
                 if self.use_postgres:
                     cursor.execute('''
                         UPDATE smart_trades
-                        SET is_closed = FALSE, sol_received = %s, exit_tx = %s, profit_percent = %s, closed_at = CURRENT_TIMESTAMP
+                        SET is_closed = TRUE, sol_received = %s, exit_tx = %s, profit_percent = %s, closed_at = CURRENT_TIMESTAMP
                         WHERE user_id = %s AND token_address = %s AND is_closed = FALSE
                     ''', (sol_received, exit_tx, profit_percent, user_id, token_address))
                 else:
@@ -1250,9 +1278,22 @@ class Database:
             logger.error(f"update_user_setting error ({field}): {e}")
             return False
 
-    def get_user_setting(self, user_id: int, key: str, default=None):
-        """Return a stored user setting (string), cast to float/int if numeric."""
+    def get_user_setting(self, user_identifier: int, key: str, default=None):
+        """Return a stored user setting (string), cast to float/int if numeric.
+        
+        Args:
+            user_identifier: Can be telegram_id or internal user_id
+            key: Setting key name
+            default: Default value if not found
+        """
         try:
+            # Try to get internal user_id from telegram_id
+            user = self.get_user(user_identifier)
+            if user:
+                user_id = user['user_id']
+            else:
+                user_id = user_identifier
+            
             conn = self.get_connection()
             cursor = conn.cursor()
             if self.use_postgres:
@@ -1612,13 +1653,24 @@ class Database:
 
     # Copy performance tracking
 
-    def open_copy_position(self, user_id: int, watched_wallet: str, token_address: str,
+    def open_copy_position(self, user_identifier: int, watched_wallet: str, token_address: str,
                            whale_entry_price: float, user_entry_price: float,
                            copy_scale: float, sol_spent: float,
                            whale_block_time: int = 0, copy_latency_ms: int = 0,
                            signal_count: int = 1) -> int:
-        """Record opening of a copy trade position. Returns row id."""
+        """Record opening of a copy trade position. Returns row id.
+        
+        Args:
+            user_identifier: Can be telegram_id or internal user_id
+        """
         try:
+            # Try to get internal user_id from telegram_id
+            user = self.get_user(user_identifier)
+            if user:
+                user_id = user['user_id']
+            else:
+                user_id = user_identifier
+            
             conn = self.get_connection()
             cursor = conn.cursor()
             if self.use_postgres:
@@ -1720,9 +1772,17 @@ class Database:
             logger.error(f"Error closing copy position: {e}")
             return False
 
-    def get_all_open_positions(self, user_id: int) -> Dict:
-        """Return all open positions for a user."""
+    def get_all_open_positions(self, user_identifier: int) -> Dict:
+        """Return all open positions for a user.
+        
+        Args:
+            user_identifier: Can be telegram_id or internal user_id
+        """
         try:
+            # Convert telegram_id to internal user_id if needed
+            user = self.get_user(user_identifier)
+            user_id = user['user_id'] if user else user_identifier
+            
             conn = self.get_connection()
             cursor = conn.cursor()
 
@@ -1773,11 +1833,19 @@ class Database:
 
     # Auto-trade settings
 
-    def save_auto_trade_settings(self, user_id: int, is_active: bool,
+    def save_auto_trade_settings(self, user_identifier: int, is_active: bool,
                                   trade_percent: float = 20.0,
                                   max_trades_per_cycle: int = 2) -> None:
-        """Persist auto-trade settings for a user."""
+        """Persist auto-trade settings for a user.
+        
+        Args:
+            user_identifier: Can be telegram_id or internal user_id
+        """
         try:
+            # Convert telegram_id to internal user_id if needed
+            user = self.get_user(user_identifier)
+            user_id = user['user_id'] if user else user_identifier
+            
             conn = self.get_connection()
             cursor = conn.cursor()
             if self.use_postgres:
@@ -1829,11 +1897,19 @@ class Database:
             logger.error(f"get_active_auto_traders error: {e}")
             return []
 
-    def save_auto_smart_settings(self, user_id: int, is_active: bool,
+    def save_auto_smart_settings(self, user_identifier: int, is_active: bool,
                                   trade_percent: float = 10.0,
                                   max_positions: int = 4) -> None:
-        """Persist auto-smart trade settings for a user."""
+        """Persist auto-smart trade settings for a user.
+        
+        Args:
+            user_identifier: Can be telegram_id or internal user_id
+        """
         try:
+            # Convert telegram_id to internal user_id if needed
+            user = self.get_user(user_identifier)
+            user_id = user['user_id'] if user else user_identifier
+            
             conn = self.get_connection()
             cursor = conn.cursor()
             if self.use_postgres:
@@ -2078,10 +2154,18 @@ class Database:
         except Exception as e:
             logger.error(f"_ensure_token_list_table error: {e}")
 
-    def get_token_list(self, user_id: int, list_type: str) -> set:
-        """Return the set of token addresses for 'blacklist' or 'whitelist'."""
+    def get_token_list(self, user_identifier: int, list_type: str) -> set:
+        """Return the set of token addresses for 'blacklist' or 'whitelist'.
+        
+        Args:
+            user_identifier: Can be telegram_id or internal user_id
+        """
         self._ensure_token_list_table()
         try:
+            # Convert telegram_id to internal user_id if needed
+            user = self.get_user(user_identifier)
+            user_id = user['user_id'] if user else user_identifier
+            
             conn = self.get_connection()
             if self.use_postgres:
                 rows = conn.execute(
@@ -2099,9 +2183,18 @@ class Database:
             logger.error(f"get_token_list error: {e}")
             return set()
 
-    def add_to_token_list(self, user_id: int, list_type: str, token_address: str):
+    def add_to_token_list(self, user_identifier: int, list_type: str, token_address: str):
+        """Add token to blacklist or whitelist.
+        
+        Args:
+            user_identifier: Can be telegram_id or internal user_id
+        """
         self._ensure_token_list_table()
         try:
+            # Convert telegram_id to internal user_id if needed
+            user = self.get_user(user_identifier)
+            user_id = user['user_id'] if user else user_identifier
+            
             conn = self.get_connection()
             if self.use_postgres:
                 conn.execute(
@@ -2118,9 +2211,18 @@ class Database:
         except Exception as e:
             logger.error(f"add_to_token_list error: {e}")
 
-    def remove_from_token_list(self, user_id: int, list_type: str, token_address: str):
+    def remove_from_token_list(self, user_identifier: int, list_type: str, token_address: str):
+        """Remove token from blacklist or whitelist.
+        
+        Args:
+            user_identifier: Can be telegram_id or internal user_id
+        """
         self._ensure_token_list_table()
         try:
+            # Convert telegram_id to internal user_id if needed
+            user = self.get_user(user_identifier)
+            user_id = user['user_id'] if user else user_identifier
+            
             conn = self.get_connection()
             if self.use_postgres:
                 conn.execute(
@@ -2137,9 +2239,17 @@ class Database:
         except Exception as e:
             logger.error(f"remove_from_token_list error: {e}")
 
-    def update_pending_trade_token_amount(self, user_id: int, token_address: str, amount: float):
-        """Update the remaining token amount for an open smart trade."""
+    def update_pending_trade_token_amount(self, user_identifier: int, token_address: str, amount: float):
+        """Update the remaining token amount for an open smart trade.
+        
+        Args:
+            user_identifier: Can be telegram_id or internal user_id
+        """
         try:
+            # Convert telegram_id to internal user_id if needed
+            user = self.get_user(user_identifier)
+            user_id = user['user_id'] if user else user_identifier
+            
             conn = self.get_connection()
             if self.use_postgres:
                 conn.execute(

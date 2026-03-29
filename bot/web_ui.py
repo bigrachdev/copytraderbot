@@ -300,7 +300,7 @@ def watch_whale():
 
     try:
         result = db.add_watched_wallet(
-            session['user_id'],
+            session['telegram_id'],
             wallet_address,
             copy_scale=copy_scale
         )
@@ -315,7 +315,7 @@ def watch_whale():
 def get_watched_wallets():
     """Get watched wallets"""
     try:
-        watched = db.get_watched_wallets(session['user_id'])
+        watched = db.get_watched_wallets(session['telegram_id'])
         return jsonify({'watched': watched})
     except Exception as e:
         logger.error(f"Watched wallets error: {e}")

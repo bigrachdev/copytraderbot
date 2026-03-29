@@ -54,12 +54,12 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
 
 
 class AggressiveKeepAlive:
-    """Aggressive keep-alive service to prevent Render sleep"""
-    
+    """Aggressive keep-alive service to prevent Render sleep - NO SLEEP ALLOWED"""
+
     def __init__(self, port=10000):
         self.port = port
         self.render_url = os.getenv('RENDER_EXTERNAL_URL', '')
-        self.ping_interval = 240  # 4 minutes (Render sleeps after 15 min)
+        self.ping_interval = 180  # 3 minutes (Render sleeps after 15 min) - AGGRESSIVE
         self.http_server = None
         self.running = True
         
@@ -74,41 +74,45 @@ class AggressiveKeepAlive:
             logger.error(f"❌ Failed to start HTTP server: {e}")
     
     def self_ping(self):
-        """Aggressively ping self to prevent sleep"""
+        """Aggressively ping self to prevent sleep - NO SLEEP ALLOWED"""
         if not self.render_url:
             logger.warning("⚠️ RENDER_EXTERNAL_URL not set - self-ping disabled")
             logger.warning("⚠️ Set this in Render dashboard after first deployment!")
             return
-        
-        logger.info(f"🔄 Self-ping service started")
+
+        logger.info(f"🔥 AGGRESSIVE Self-ping service started")
         logger.info(f"🎯 Target: {self.render_url}")
-        logger.info(f"⏱️ Interval: {self.ping_interval} seconds")
-        
+        logger.info(f"⚡ Interval: {self.ping_interval} seconds (NO SLEEP!)")
+
         consecutive_failures = 0
-        max_failures = 5
-        
+        max_failures = 10
+
         while self.running:
             try:
                 start_time = time.time()
-                
-                # Try multiple endpoints
-                endpoints = ['/', '/health', '']
+
+                # Try multiple endpoints aggressively
+                endpoints = ['/', '/health', '/api', '']
                 success = False
-                
+
                 for endpoint in endpoints:
                     try:
                         url = f"{self.render_url.rstrip('/')}{endpoint}"
                         response = requests.get(
-                            url, 
-                            timeout=15,
-                            headers={'User-Agent': 'KeepAlive-Service/1.0'}
+                            url,
+                            timeout=10,
+                            headers={
+                                'User-Agent': 'KeepAlive-Service/1.0 (Aggressive)',
+                                'Cache-Control': 'no-cache',
+                                'Pragma': 'no-cache'
+                            }
                         )
-                        
+
                         if response.status_code == 200:
                             elapsed = time.time() - start_time
                             HealthCheckHandler.ping_count += 1
                             HealthCheckHandler.last_ping = datetime.now()
-                            
+
                             logger.info(f"✅ Ping #{HealthCheckHandler.ping_count} successful "
                                       f"({response.status_code}) - {elapsed:.2f}s")
                             success = True
@@ -116,21 +120,24 @@ class AggressiveKeepAlive:
                             break
                     except requests.exceptions.RequestException:
                         continue
-                
+
                 if not success:
                     consecutive_failures += 1
                     logger.warning(f"⚠️ Ping failed (attempt {consecutive_failures}/{max_failures})")
-                    
+
                     if consecutive_failures >= max_failures:
-                        logger.error(f"❌ {max_failures} consecutive failures - service may be down!")
-                        # Reset counter but keep trying
+                        logger.error(f"❌ {max_failures} consecutive failures - restarting service!")
+                        # Reset counter but keep trying aggressively
                         consecutive_failures = 0
-                
+                        # Quick retry after failure
+                        time.sleep(30)
+                        continue
+
             except Exception as e:
                 logger.error(f"❌ Ping error: {e}")
                 consecutive_failures += 1
-            
-            # Wait before next ping
+
+            # Wait before next ping - NO SLEEP ALLOWED
             time.sleep(self.ping_interval)
     
     def external_ping_recommendations(self):
@@ -152,22 +159,23 @@ class AggressiveKeepAlive:
         logger.info("\n" + "="*60 + "\n")
     
     def heartbeat_logger(self):
-        """Log periodic heartbeat to show service is alive"""
+        """Log periodic heartbeat to show service is alive - NO SLEEP ALLOWED"""
         while self.running:
-            time.sleep(300)  # Every 5 minutes
+            time.sleep(180)  # Every 3 minutes - MORE FREQUENT
             uptime = datetime.now() - HealthCheckHandler.start_time
-            logger.info(f"💚 Heartbeat - Uptime: {str(uptime).split('.')[0]} | "
-                       f"Pings: {HealthCheckHandler.ping_count}")
+            logger.info(f"💚 HEARTBEAT - Uptime: {str(uptime).split('.')[0]} | "
+                       f"Pings: {HealthCheckHandler.ping_count} | NO SLEEP!")
     
     def start(self):
-        """Start all keep-alive services"""
-        logger.info("\n" + "🚀"*30)
-        logger.info("🚀 AGGRESSIVE KEEP-ALIVE SERVICE")
-        logger.info("🚀"*30)
+        """Start all keep-alive services - AGGRESSIVE MODE - NO SLEEP ALLOWED"""
+        logger.info("\n" + "🔥"*30)
+        logger.info("🔥 AGGRESSIVE KEEP-ALIVE SERVICE - NO SLEEP ALLOWED")
+        logger.info("🔥"*30)
         logger.info(f"\n⏰ Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}")
         logger.info(f"🌐 Port: {self.port}")
+        logger.info(f"⚡ Ping Interval: {self.ping_interval} seconds (AGGRESSIVE)")
         logger.info(f"🔗 URL: {self.render_url if self.render_url else 'Not set (will update after deployment)'}")
-        logger.info(f"⚡ Status: ACTIVE\n")
+        logger.info(f"💪 Status: ACTIVE - PREVENTING SLEEP\n")
         
         # Show external monitoring recommendations
         self.external_ping_recommendations()

@@ -98,7 +98,7 @@ def get_watched_wallets():
     if 'user_id' not in session:
         return jsonify({'error': 'Unauthorized'}), 401
     
-    wallets = db.get_watched_wallets(session['user_id'])
+    wallets = db.get_watched_wallets(session['telegram_id'])
     return jsonify({'wallets': wallets})
 
 
@@ -116,7 +116,7 @@ def add_watched_wallet():
     if not wallet_manager.validate_address(wallet_address):
         return jsonify({'error': 'Invalid wallet address'}), 400
     
-    success = db.add_watched_wallet(session['user_id'], wallet_address, alias, copy_scale)
+    success = db.add_watched_wallet(session['telegram_id'], wallet_address, alias, copy_scale)
     
     if success:
         return jsonify({'success': True})

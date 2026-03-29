@@ -26,9 +26,12 @@ class WalletMonitor:
             users = db.get_all_users()
             user_ids = []
             for user in (users or []):
-                wallets = db.get_watched_wallets(user.get('user_id') or user.get('id'))
-                if wallets:
-                    user_ids.append(user.get('user_id') or user.get('id'))
+                # Use telegram_id for database functions
+                telegram_id = user.get('telegram_id')
+                if telegram_id:
+                    wallets = db.get_watched_wallets(telegram_id)
+                    if wallets:
+                        user_ids.append(telegram_id)
 
             logger.info(f"📊 Monitoring {len(user_ids)} users")
 
@@ -61,12 +64,12 @@ class WalletMonitor:
                 # Check for new users periodically using db abstraction
                 users = db.get_all_users()
                 for user in (users or []):
-                    user_id = user.get('user_id') or user.get('id')
-                    if user_id not in self.active_monitors:
-                        wallets = db.get_watched_wallets(user_id)
+                    telegram_id = user.get('telegram_id')
+                    if telegram_id and telegram_id not in self.active_monitors:
+                        wallets = db.get_watched_wallets(telegram_id)
                         if wallets:
-                            task = asyncio.create_task(copy_trader.start_monitoring_for_user(user_id))
-                            self.active_monitors[user_id] = task
+                            task = asyncio.create_task(copy_trader.start_monitoring_for_user(telegram_id))
+                            self.active_monitors[telegram_id] = task
 
         except asyncio.CancelledError:
             logger.info("Wallet monitor cancelled")
