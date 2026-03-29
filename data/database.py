@@ -552,14 +552,49 @@ class Database:
         conn.close()
 
     # Watched wallet operations
-    def add_watched_wallet(self, user_id: int, wallet_address: str,
+    def add_watched_wallet(self, user_identifier: int, wallet_address: str,
                            alias: str = None, copy_scale: float = 1.0,
                            copy_delay_seconds: int = 0,
                            max_loss_percent: float = 20.0,
                            weight: float = 1.0,
                            chain: str = 'solana') -> bool:
-        """Add watched wallet for copy trading"""
+        """Add watched wallet for copy trading
+        
+        Args:
+            user_identifier: Can be either telegram_id OR internal user_id
+            wallet_address: Wallet address to watch
+            alias: Optional alias for the wallet
+            copy_scale: Copy trading scale multiplier
+            copy_delay_seconds: Delay before copying trades
+            max_loss_percent: Maximum loss percentage before stopping
+            weight: Weight for signal aggregation
+            chain: Blockchain (default: 'solana')
+        """
         try:
+            # Determine if this is a telegram_id or internal user_id
+            # Internal user_ids are typically small integers (1, 2, 3...)
+            # Telegram IDs are large integers (often 10+ digits)
+            user = self.get_user(user_identifier)
+            if user:
+                # It's a telegram_id, use the internal user_id
+                user_id = user['user_id']
+            else:
+                # It might already be an internal user_id, verify it exists
+                conn_check = self.get_connection()
+                cursor_check = conn_check.cursor()
+                if self.use_postgres:
+                    cursor_check.execute('SELECT user_id FROM users WHERE user_id = %s', (user_identifier,))
+                else:
+                    cursor_check.execute('SELECT user_id FROM users WHERE user_id = ?', (user_identifier,))
+                result = cursor_check.fetchone()
+                conn_check.close()
+                
+                if result:
+                    user_id = user_identifier
+                else:
+                    logger.error(f"Cannot add watched wallet: user {user_identifier} not found")
+                    return False
+            
             conn = self.get_connection()
             cursor = conn.cursor()
             
@@ -577,7 +612,7 @@ class Database:
             
             if cursor.fetchone():
                 conn.close()
-                logger.warning(f"Wallet {wallet_address[:16]}... already being watched by user {user_id}")
+                logger.warning(f"Wallet {wallet_address[:16]}... already being watched by user {user_identifier}")
                 return False
             
             if self.use_postgres:
@@ -676,8 +711,21 @@ class Database:
         conn.close()
         return True
 
-    def get_watched_wallets(self, user_id: int) -> List[Dict]:
-        """Get all watched wallets for user"""
+    def get_watched_wallets(self, user_identifier: int) -> List[Dict]:
+        """Get all watched wallets for user
+        
+        Args:
+            user_identifier: Can be either telegram_id OR internal user_id
+        """
+        # Determine if this is a telegram_id or internal user_id
+        user = self.get_user(user_identifier)
+        if user:
+            # It's a telegram_id, use the internal user_id
+            user_id = user['user_id']
+        else:
+            # It might already be an internal user_id
+            user_id = user_identifier
+        
         conn = self.get_connection()
         cursor = conn.cursor()
         if self.use_postgres:
