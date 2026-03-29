@@ -294,17 +294,17 @@ def watch_whale():
     data = request.json
     wallet_address = data.get('wallet_address')
     copy_scale = data.get('copy_scale', 1.0)
-    
+
     if not wallet_address:
         return jsonify({'error': 'Wallet address required'}), 400
-    
+
     try:
-        result = copy_trader.add_watched_wallet(
+        result = db.add_watched_wallet(
             session['user_id'],
             wallet_address,
-            copy_scale
+            copy_scale=copy_scale
         )
-        return jsonify(result)
+        return jsonify({'success': result})
     except Exception as e:
         logger.error(f"Watch error: {e}")
         return jsonify({'error': str(e)}), 500

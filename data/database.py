@@ -93,7 +93,8 @@ class Database:
                 is_active BOOLEAN DEFAULT TRUE,
                 is_paused BOOLEAN DEFAULT FALSE,
                 pause_reason TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, wallet_address)
             )
         ''')
 
@@ -313,6 +314,7 @@ class Database:
                 is_paused BOOLEAN DEFAULT 0,
                 pause_reason TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, wallet_address),
                 FOREIGN KEY(user_id) REFERENCES users(user_id)
             )
         ''')
@@ -560,6 +562,24 @@ class Database:
         try:
             conn = self.get_connection()
             cursor = conn.cursor()
+            
+            # Check for duplicate
+            if self.use_postgres:
+                cursor.execute('''
+                    SELECT id FROM watched_wallets 
+                    WHERE user_id = %s AND wallet_address = %s AND is_active = TRUE
+                ''', (user_id, wallet_address))
+            else:
+                cursor.execute('''
+                    SELECT id FROM watched_wallets 
+                    WHERE user_id = ? AND wallet_address = ? AND is_active = 1
+                ''', (user_id, wallet_address))
+            
+            if cursor.fetchone():
+                conn.close()
+                logger.warning(f"Wallet {wallet_address[:16]}... already being watched by user {user_id}")
+                return False
+            
             if self.use_postgres:
                 cursor.execute('''
                     INSERT INTO watched_wallets
