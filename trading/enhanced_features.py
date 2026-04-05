@@ -253,7 +253,8 @@ class EnhancedFeatures:
     # 5. Kelly Criterion for Copy Trades
     # =========================================================================
 
-    def calculate_kelly_copy_amount(self, user_balance: float,
+    def calculate_kelly_copy_amount(self, user_id: int,
+                                     user_balance: float,
                                      whale_win_rate: float,
                                      whale_avg_win: float,
                                      whale_avg_loss: float,

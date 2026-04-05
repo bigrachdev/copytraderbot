@@ -30,6 +30,8 @@ except ImportError:
         "Run: pip install websockets"
     )
 
+from trading.telegram_broadcaster import broadcaster as tg_broadcaster
+
 from config import (
     SOLANA_RPC_URL, SOLANA_WSS_URL,
     COPY_TRADE_CHECK_INTERVAL, MIN_TRADE_AMOUNT,
@@ -46,6 +48,7 @@ from chains.solana.dex_swaps import swapper
 from utils.notifications import notification_engine
 from trading.enhanced_features import enhanced_features
 from trading.mev_protection import mev_protection
+from trading.risk_manager import risk_manager
 
 logger = logging.getLogger(__name__)
 
@@ -452,6 +455,10 @@ class CopyTradingEngine:
                                   wallet_config: Dict, swap_data: Dict):
         """Route a detected whale swap through all feature gates, then execute."""
 
+        # 0. Runtime risk gates
+        if not self._passes_runtime_risk_gates(user_id):
+            return
+
         # 1. Auto-pause check
         if self._should_auto_pause(user_id, whale_address, wallet_config):
             return
@@ -528,6 +535,24 @@ class CopyTradingEngine:
             whale_block_time=swap_data.get('blockTime', 0),
             signal_count=signal_count,
         )
+
+    def _passes_runtime_risk_gates(self, user_id: int) -> bool:
+        """Check enhanced risk gates that can block new entries."""
+        can_trade_daily, current_loss = enhanced_features.check_daily_loss_limit(user_id)
+        if not can_trade_daily:
+            logger.warning(
+                f"Daily loss limit hit for user {user_id}: {current_loss:.1f}%"
+            )
+            return False
+
+        can_trade_cooloff, remaining_min = enhanced_features.check_cool_off_period(user_id)
+        if not can_trade_cooloff:
+            logger.warning(
+                f"Cool-off active for user {user_id}: {remaining_min}m remaining"
+            )
+            return False
+
+        return True
 
     # ------------------------------------------------------------------
     # Keypair helper
@@ -625,6 +650,11 @@ class CopyTradingEngine:
                 logger.error(f"User {user_id} not found")
                 return False
 
+            # Latency is needed before slippage optimization.
+            exec_time_ms = 0
+            if whale_block_time:
+                exec_time_ms = int((time.time() - whale_block_time) * 1000)
+
             # Get best price quote with latency-optimized slippage
             base_slippage = float(db.get_user_setting(user_id, 'slippage_tolerance', 2.0))
             adjusted_slippage = enhanced_features.get_latency_adjusted_slippage(
@@ -649,11 +679,8 @@ class CopyTradingEngine:
             # SOL per token (needed for correct PnL: higher = token more valuable)
             user_entry_price = amount / output_amount if output_amount > 0 else 0
 
-            # 8. Latency tracking
-            exec_time_ms = 0
             if whale_block_time:
-                exec_time_ms = int((time.time() - whale_block_time) * 1000)
-                logger.info(f"⏱️ Copy latency: {exec_time_ms}ms")
+                logger.info(f"Copy latency: {exec_time_ms}ms")
 
             # Priority fee (already fetched by execute_jupiter_swap, but log it here)
             priority_fee = await swapper.get_recent_priority_fee()
@@ -737,16 +764,36 @@ class CopyTradingEngine:
                 )
 
                 # Launch trailing-stop monitor for this position
-                pm_key = (user_id, output_mint)
-                if pm_key in self._position_monitors and not self._position_monitors[pm_key].done():
-                    self._position_monitors[pm_key].cancel()
+                if risk_manager.is_enabled(user_id):
+                    pm_key = (user_id, output_mint)
+                    if pm_key in self._position_monitors and not self._position_monitors[pm_key].done():
+                        self._position_monitors[pm_key].cancel()
 
-                self._position_monitors[pm_key] = asyncio.create_task(
-                    self._monitor_position_trailing(
-                        user_id, position_id, output_mint,
-                        user_entry_price, tokens_received
+                    self._position_monitors[pm_key] = asyncio.create_task(
+                        self._monitor_position_trailing(
+                            user_id, position_id, output_mint,
+                            user_entry_price, tokens_received
+                        )
+                    )
+                else:
+                    logger.info(
+                        f"Risk manager disabled for user {user_id} - skipping copy auto-exit monitor"
+                    )
+
+                # Broadcast to Telegram channel
+                asyncio.create_task(
+                    self._broadcast_copy_signal(
+                        user_id=user_id,
+                        token_address=output_mint,
+                        amount=amount,
+                        tokens_received=tokens_received,
+                        whale_wallet=watched_wallet,
+                        entry_price=user_entry_price,
+                        signal_count=signal_count,
+                        exec_time_ms=exec_time_ms,
                     )
                 )
+
                 return True
 
             # Swap failed — remove dangling open record
@@ -794,6 +841,12 @@ class CopyTradingEngine:
 
         while True:
             try:
+                if not risk_manager.is_enabled(user_id):
+                    logger.info(
+                        f"Risk manager disabled for user {user_id} - stopping copy monitor {token_address[:8]}"
+                    )
+                    return
+
                 elapsed_hours = (time.time() - start_time) / 3600
 
                 # Time-decay exit
@@ -880,6 +933,7 @@ class CopyTradingEngine:
                                   amount: float, position_id: int, reason: str):
         """Swap tokens → SOL and close / update the DB record."""
         try:
+            open_pos = db.get_open_copy_position(user_id, token_address)
             keypair     = self._get_user_keypair(user_id)
             sell_result = await swapper.execute_swap(
                 token_address, WSOL_MINT, amount, 'jupiter', keypair=keypair
@@ -896,6 +950,11 @@ class CopyTradingEngine:
             db.close_copy_position(
                 position_id, 0, exit_price, sol_received, exit_reason=reason
             )
+            if reason != 'partial_profit' and open_pos and open_pos.get('sol_spent'):
+                sol_spent = float(open_pos.get('sol_spent') or 0)
+                profit_pct = ((sol_received - sol_spent) / sol_spent * 100) if sol_spent > 0 else 0
+                enhanced_features.record_daily_loss(user_id, profit_pct)
+                enhanced_features.record_trade_result(user_id, profit_pct > 0)
             logger.info(
                 f"✅ Exit [{reason}]: {amount:.4f} tokens → {sol_received:.4f} SOL  "
                 f"sig={sell_result.get('signature', 'n/a')[:20]}"
@@ -1085,7 +1144,59 @@ class CopyTradingEngine:
             logger.error(f"Error extracting swap data for {signature[:10]}: {e}")
             return None
 
+    # ------------------------------------------------------------------
+    # Telegram Broadcasting
+    # ------------------------------------------------------------------
+
+    async def _broadcast_copy_signal(
+        self,
+        user_id: int,
+        token_address: str,
+        amount: float,
+        tokens_received: float,
+        whale_wallet: str,
+        entry_price: float,
+        signal_count: int,
+        exec_time_ms: int,
+    ):
+        """Broadcast copy trade signal to Telegram channel."""
+        try:
+            from trading.token_analyzer import token_analyzer
+            # Fetch token metadata for better signal
+            token_info = await token_analyzer.get_token_info(token_address)
+            token_name = token_info.get('name', 'Unknown Token') if token_info else 'Unknown Token'
+            liquidity = token_info.get('liquidity_usd', 0) if token_info else 0
+
+            # Determine confidence based on signal count
+            if signal_count >= 3:
+                confidence = 'HIGH'
+            elif signal_count >= 2:
+                confidence = 'MEDIUM'
+            else:
+                confidence = 'LOW'
+
+            # Build DexScreener URL
+            dexscreener_url = f"https://dexscreener.com/solana/{token_address}"
+
+            signal_data = {
+                'token_name': token_name,
+                'token_address': token_address,
+                'action': 'BUY',
+                'size_sol': amount,
+                'size_usd': 0,  # Would need price feed to calculate
+                'wallet_address': whale_wallet,
+                'entry_price': entry_price,
+                'dexscreener_url': dexscreener_url,
+                'confidence': confidence,
+                'liquidity_usd': liquidity,
+            }
+
+            await tg_broadcaster.broadcast_signal(signal_data)
+            logger.info(f"📢 Broadcasted copy signal for {token_name}")
+
+        except Exception as e:
+            logger.error(f"Failed to broadcast copy signal: {e}")
+
 
 # Singleton instance
 copy_trader = CopyTradingEngine()
-

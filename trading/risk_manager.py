@@ -14,6 +14,14 @@ class RiskManager:
     
     def __init__(self):
         self.active_orders = {}  # Track active orders
+
+    def is_enabled(self, user_id: int) -> bool:
+        """Return whether automated risk management is enabled for a user."""
+        return bool(db.get_user_setting(user_id, 'enable_risk_manager', True))
+
+    def set_enabled(self, user_id: int, enabled: bool) -> bool:
+        """Enable or disable automated risk management for a user."""
+        return db.update_user_setting(user_id, 'enable_risk_manager', bool(enabled))
     
     def create_stop_loss_order(self, user_id: int, token_address: str,
                               entry_price: float, stop_loss_percent: float) -> Dict:

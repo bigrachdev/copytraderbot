@@ -33,6 +33,8 @@ try:
     logger.info("✅ Imported keep_alive")
     from config import LOG_LEVEL
     logger.info("✅ Imported config")
+    from trading.telegram_broadcaster import broadcaster
+    logger.info("✅ Imported telegram_broadcaster")
 except Exception as e:
     logger.critical(f"Import error: {e}")
     logger.critical(traceback.format_exc())
@@ -60,6 +62,10 @@ async def main():
         # Start wallet monitoring in background
         monitor_task = asyncio.create_task(monitor.run())
         logger.info("✅ Wallet monitoring started")
+
+        # Initialize Telegram broadcaster
+        await broadcaster.initialize()
+        logger.info("✅ Telegram broadcaster initialized")
 
         # Start Telegram bot (blocking)
         logger.info("✅ Starting Telegram bot...")

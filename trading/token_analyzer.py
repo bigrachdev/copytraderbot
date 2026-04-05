@@ -3,6 +3,7 @@ Smart Token Analyzer - Analyzes Solana token safety and risk factors.
 Uses Solscan + Birdeye + DexScreener (all free/no-key endpoints).
 """
 import logging
+import asyncio
 import requests
 from typing import Dict, Tuple
 from datetime import datetime
@@ -71,6 +72,36 @@ class TokenAnalyzer:
             logger.error(f"analyze_token error: {e}")
             results['warnings'].append(f"Analysis error: {str(e)}")
             return results
+
+    async def get_token_info(self, token_address: str) -> Dict:
+        """Return lightweight token metadata for messaging/broadcast surfaces."""
+        def _fetch() -> Dict:
+            info = {
+                'address': token_address,
+                'name': 'Unknown Token',
+                'symbol': '?',
+                'liquidity_usd': 0.0,
+            }
+            try:
+                r = requests.get(
+                    f"{self.dex_screener_api}/latest/dex/tokens/{token_address}",
+                    timeout=RPC_TIMEOUT,
+                )
+                if r.status_code != 200:
+                    return info
+                pairs = r.json().get('pairs') or []
+                if not pairs:
+                    return info
+                p = pairs[0]
+                base = p.get('baseToken') or {}
+                info['name'] = base.get('name', info['name'])
+                info['symbol'] = base.get('symbol', info['symbol'])
+                info['liquidity_usd'] = float((p.get('liquidity') or {}).get('usd', 0) or 0)
+            except Exception:
+                pass
+            return info
+
+        return await asyncio.to_thread(_fetch)
 
     # =========================================================================
     # Solana checks

@@ -7,7 +7,7 @@ Features:
   3.  Momentum scoring                       (volume spike, price momentum, holder growth, buy/sell pressure)
   4.  Auto Copy Trade mode                   (whale-driven loop — rank by win_rate × avg_profit)
   5.  Auto Smart Trade mode                  (token-scan loop — DexScreener + Birdeye every 30 min)
-  6.  Multi-chain support                    (Solana, Base, BSC)
+  6.  Solana-only execution                  (single-chain trading flow)
   7.  Kelly Criterion position sizing        (real historical win_rate/avg_win/avg_loss from DB)
   8.  Portfolio limits                       (max open positions, max % per token)
   9.  Graduated take-profit ladder           (25% at +30%, 50% at +60%, rest +100%)
@@ -31,6 +31,7 @@ from chains.solana.dex_swaps import swapper
 from utils.notifications import notification_engine
 from trading.token_analyzer import token_analyzer
 from trading.enhanced_features import enhanced_features
+from trading.risk_manager import risk_manager
 from config import (
     WSOL_MINT, BIRDEYE_API_KEY,
     SMART_MIN_TRADE_SOL, SMART_MAX_OPEN_POSITIONS, SMART_MAX_PCT_PER_TOKEN,
@@ -126,6 +127,18 @@ class SmartTrader:
             logger.error(f"_get_user_keypair error: {e}")
             return None
 
+    def _passes_runtime_risk_gates(self, user_id: int) -> Tuple[bool, str]:
+        """Check enhanced risk gates before opening a new position."""
+        can_trade_daily, current_loss = enhanced_features.check_daily_loss_limit(user_id)
+        if not can_trade_daily:
+            return False, f"Daily loss limit reached ({current_loss:.1f}%)"
+
+        can_trade_cooloff, remaining_min = enhanced_features.check_cool_off_period(user_id)
+        if not can_trade_cooloff:
+            return False, f"Cool-off active ({remaining_min}m remaining)"
+
+        return True, ""
+
     async def analyze_and_trade(
         self,
         user_id: int,
@@ -135,11 +148,14 @@ class SmartTrader:
         chain: str = "solana",
         auto_rebuy: bool = False,
     ) -> Dict:
-        """Full analyze-then-trade flow. Supports solana, base, bsc."""
+        """Full analyze-then-trade flow (Solana only)."""
+        if chain != 'solana':
+            logger.warning(f"Unsupported chain '{chain}' requested; forcing Solana")
+            chain = 'solana'
         result = {
             'user_id': user_id,
             'token_address': token_address,
-            'chain': chain,
+            'chain': 'solana',
             'status': 'PENDING',
             'trade_percent_selected': user_trade_percent,
             'trade_amount_sol': 0,
@@ -170,12 +186,19 @@ class SmartTrader:
 
             if balance < min_amount:
                 result.update({'status': 'INSUFFICIENT_BALANCE',
-                               'error': f"Minimum {min_amount} required on {chain}"})
+                               'error': f"Minimum {min_amount} required on Solana"})
                 return result
 
             # Safety check: blacklist
             if token_address in self._get_blacklist(user_id):
                 result.update({'status': 'BLACKLISTED', 'error': 'Token is on your blacklist'})
+                return result
+
+            # Runtime risk gates
+            can_trade, reason = self._passes_runtime_risk_gates(user_id)
+            if not can_trade:
+                result.update({'status': 'RISK_BLOCKED', 'error': reason})
+                logger.warning(f"[SmartRiskGate] user={user_id} blocked: {reason}")
                 return result
 
             # Token analysis — pass chain so EVM uses Honeypot.is instead of Solscan
@@ -243,15 +266,20 @@ class SmartTrader:
                 )
 
                 # Store task so manual sell can cancel it
-                pm_key = (user_id, token_address)
-                if pm_key in self._position_monitors and not self._position_monitors[pm_key].done():
-                    self._position_monitors[pm_key].cancel()
-                self._position_monitors[pm_key] = asyncio.create_task(
-                    self._monitor_position_graduated(
-                        user_id, token_address, entry_price, received_amount,
-                        auto_rebuy=auto_rebuy
+                if risk_manager.is_enabled(user_id):
+                    pm_key = (user_id, token_address)
+                    if pm_key in self._position_monitors and not self._position_monitors[pm_key].done():
+                        self._position_monitors[pm_key].cancel()
+                    self._position_monitors[pm_key] = asyncio.create_task(
+                        self._monitor_position_graduated(
+                            user_id, token_address, entry_price, received_amount,
+                            auto_rebuy=auto_rebuy
+                        )
                     )
-                )
+                else:
+                    logger.info(
+                        f"Risk manager disabled for user {user_id} - skipping smart auto-exit monitor"
+                    )
             else:
                 result.update({'status': 'SWAP_FAILED',
                                'error': 'Swap returned no result'})
@@ -271,9 +299,12 @@ class SmartTrader:
         Filters out dead tokens (no volume / no liquidity).
         Returns a deduplicated list sorted by momentum score.
         """
+        if chain != 'solana':
+            logger.warning(f"Unsupported discovery chain '{chain}' requested; forcing Solana")
+            chain = 'solana'
+
         tokens: Dict[str, Dict] = {}
-        chain_id_map = {'solana': 'solana', 'bsc': 'bsc', 'base': 'base'}
-        chain_id = chain_id_map.get(chain, chain)
+        chain_id = 'solana'
 
         def _parse_pair(p: Dict, source: str) -> Optional[Dict]:
             """Extract token dict from a DexScreener pair object."""
@@ -734,6 +765,10 @@ class SmartTrader:
         Safety checks run in a thread pool so they never block the event loop.
         Total timeout: 8 seconds.
         """
+        if chain != 'solana':
+            logger.warning(f"Unsupported suggestion chain '{chain}' requested; forcing Solana")
+            chain = 'solana'
+
         import concurrent.futures
 
         user = db.get_user(user_id)
@@ -905,6 +940,12 @@ class SmartTrader:
 
         while remaining > 0:
             try:
+                if not risk_manager.is_enabled(user_id):
+                    logger.info(
+                        f"Risk manager disabled for user {user_id} - stopping smart monitor {token_address[:10]}"
+                    )
+                    return
+
                 elapsed_h = (time.time() - start_time) / 3600
                 if elapsed_h >= max_hold_h:
                     await self._exit_smart_position(user_id, token_address, remaining, 'time_decay')
@@ -1016,6 +1057,7 @@ class SmartTrader:
                                     amount: float, reason: str):
         """Full exit of a smart trade position."""
         try:
+            open_trade = db.get_pending_trade_by_token(user_id, token_address)
             keypair     = self._get_user_keypair(user_id)
             sell_result = await swapper.execute_swap(
                 token_address, WSOL_MINT, amount, 'jupiter', keypair=keypair
@@ -1026,6 +1068,11 @@ class SmartTrader:
             sol_received = sell_result.get('expectedOutput', 0)
             tx_sig       = sell_result.get('signature', 'n/a')
             db.update_pending_trade_closed(user_id, token_address, sol_received, tx_sig)
+            if open_trade and open_trade.get('sol_spent'):
+                sol_spent = float(open_trade.get('sol_spent') or 0)
+                profit_pct = ((sol_received - sol_spent) / sol_spent * 100) if sol_spent > 0 else 0
+                enhanced_features.record_daily_loss(user_id, profit_pct)
+                enhanced_features.record_trade_result(user_id, profit_pct > 0)
             logger.info(
                 f"[Smart] Full exit [{reason}]: {amount:.4f} tokens → {sol_received:.4f} SOL  "
                 f"sig={tx_sig[:20]}"

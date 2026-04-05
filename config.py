@@ -11,6 +11,10 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN    = os.getenv('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHANNEL_ID   = os.getenv('TELEGRAM_CHANNEL_ID')
 
+# ── Telegram Broadcasting ────────────────────────────────────────────────────
+BROADCAST_NEWS_INTERVAL_MINUTES  = int(os.getenv('BROADCAST_NEWS_INTERVAL_MINUTES', '30'))
+BROADCAST_SELF_AD_INTERVAL_HOURS = int(os.getenv('BROADCAST_SELF_AD_INTERVAL_HOURS', '4'))
+
 # Fail fast if required env vars are missing
 _REQUIRED_ENV = ['TELEGRAM_BOT_TOKEN', 'ENCRYPTION_MASTER_PASSWORD']
 _missing = [k for k in _REQUIRED_ENV if not os.getenv(k)]
