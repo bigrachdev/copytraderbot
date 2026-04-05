@@ -12,8 +12,13 @@ import asyncio
 import aiohttp
 import time
 import hashlib
+import re
+import html
+import xml.etree.ElementTree as ET
 from typing import Dict, Optional, List, Set
-from datetime import datetime, timedelta
+from datetime import datetime
+from email.utils import parsedate_to_datetime
+from urllib.parse import urlparse
 from telegram import Bot
 from telegram.error import TelegramError
 from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, BROADCAST_NEWS_INTERVAL_MINUTES, BROADCAST_SELF_AD_INTERVAL_HOURS
@@ -29,12 +34,39 @@ class TelegramBroadcaster:
         self.channel_id = TELEGRAM_CHANNEL_ID
         self.bot: Optional[Bot] = None
         self._last_post_times: Dict[str, float] = {}  # type -> timestamp
-        self._posted_signals: Set[str] = set()  # hash of (ca + action) to prevent duplicates
+        self._posted_signals: Dict[str, float] = {}  # hash -> posted timestamp
+        self._posted_news: Dict[str, float] = {}  # news_id -> posted timestamp
         self._news_fetch_interval = BROADCAST_NEWS_INTERVAL_MINUTES * 60  # configurable (default 30 minutes)
         self._self_ad_interval = BROADCAST_SELF_AD_INTERVAL_HOURS * 60 * 60  # configurable (default 4 hours)
         self._max_signals_per_hour = 10
         self._max_signals_last_hour: List[float] = []  # timestamps
-        self._last_signal_minute = 0  # track per-minute rate limit
+        self._news_sources: List[Dict] = [
+            {
+                'name': 'Solana Foundation',
+                'url': 'https://solana.com/news/rss.xml',
+                'weight': 1.30,
+            },
+            {
+                'name': 'CoinDesk',
+                'url': 'https://www.coindesk.com/arc/outboundfeeds/rss/?outputType=xml',
+                'weight': 1.15,
+            },
+            {
+                'name': 'The Block',
+                'url': 'https://www.theblock.co/rss.xml',
+                'weight': 1.15,
+            },
+            {
+                'name': 'Blockworks',
+                'url': 'https://blockworks.co/feed',
+                'weight': 1.10,
+            },
+            {
+                'name': 'Decrypt',
+                'url': 'https://decrypt.co/feed',
+                'weight': 1.05,
+            },
+        ]
 
     async def initialize(self):
         """Initialize the bot and start background tasks."""
@@ -230,16 +262,21 @@ class TelegramBroadcaster:
             logger.debug(f"Skipping low-relevance news (score: {news_data.get('relevance_score', 0)})")
             return False
 
+        headline = self._clean_text(news_data.get('headline', ''))
+        summary = self._clean_text(news_data.get('summary', ''))
+        source_link = news_data.get('source_link', '')
+        source_name = self._clean_text(news_data.get('source_name', 'Source'))
+
         message = f"""
-<b>📰 SOLANA NEWS & ALPHA</b>
+<b>SOLANA NEWS & ALPHA</b>
 
-<b>{news_data['headline']}</b>
+<b>{html.escape(headline)}</b>
 
-{news_data['summary']}
+{html.escape(summary)}
 
-🔗 <a href="{news_data['source_link']}">Source</a>
+Source: <a href="{source_link}">{html.escape(source_name)}</a>
 
-━━━━━━━━━━━━━━━━━━
+--------------------
 <i>Not financial advice. DYOR.</i>
 """
 
@@ -304,15 +341,8 @@ Create custom wallet addresses with your chosen prefix
 
         result = await self._send_message(message)
 
-        # Pin the message on first run (can be enhanced with tracking)
-        if result and self.bot:
-            try:
-                # Get last message and pin it
-                messages = await self.bot.get_chat_administrators(self.channel_id)
-                logger.info("✅ Self-ad posted to channel")
-            except Exception as e:
-                logger.debug(f"Could not pin message: {e}")
-
+        if result:
+            logger.info("Self-ad posted to channel")
         return result
 
     # =========================================================================
@@ -363,9 +393,11 @@ Create custom wallet addresses with your chosen prefix
             return False
 
         try:
-            # Keep message under 800 chars
-            if len(message) > 800:
-                message = message[:797] + "..."
+            # Telegram supports much longer messages (~4096 chars).
+            # Keep a safe buffer for formatting and future edits.
+            max_chars = 3900
+            if len(message) > max_chars:
+                message = message[:max_chars - 3] + "..."
 
             await self.bot.send_message(
                 chat_id=self.channel_id,
@@ -390,10 +422,9 @@ Create custom wallet addresses with your chosen prefix
         signal_key = f"{signal_data['token_address']}_{signal_data['action']}"
         signal_hash = hashlib.md5(signal_key.encode()).hexdigest()
 
-        if signal_hash in self._posted_signals:
-            # Check if 15 minutes have passed
-            # We'd need to track timestamps, simplified here
-            logger.debug(f"Duplicate signal skipped: {signal_key}")
+        last_seen = self._posted_signals.get(signal_hash, 0)
+        if now - last_seen < 15 * 60:
+            logger.debug(f"Duplicate signal skipped within 15m window: {signal_key}")
             return False
 
         # Max 1 signal per 2 minutes
@@ -413,7 +444,7 @@ Create custom wallet addresses with your chosen prefix
         # Track this signal
         self._last_post_times['signal'] = now
         self._max_signals_last_hour.append(now)
-        self._posted_signals.add(signal_hash)
+        self._posted_signals[signal_hash] = now
 
         # Clean old posted signals (keep last 15 minutes)
         self._cleanup_posted_signals()
@@ -421,52 +452,215 @@ Create custom wallet addresses with your chosen prefix
         return True
 
     def _cleanup_posted_signals(self):
-        """Remove old signal hashes from tracking set."""
-        # In a production system, we'd track timestamps
-        # For simplicity, we'll just keep a reasonable limit
-        if len(self._posted_signals) > 1000:
-            self._posted_signals.clear()
+        """Remove old signal hashes from tracking dict."""
+        cutoff = time.time() - (15 * 60)
+        self._posted_signals = {
+            sig_hash: ts for sig_hash, ts in self._posted_signals.items()
+            if ts >= cutoff
+        }
 
     async def _fetch_and_post_news(self):
         """Fetch Solana news from verified sources and post relevant items."""
-        # Verified sources: Solana official Twitter, CoinDesk, The Block, Blockworks
-        # For now, this is a placeholder - integrate with actual news APIs
+        fetched = await self._fetch_from_sources(self._news_sources)
+        if not fetched:
+            logger.debug("No news items fetched from configured sources")
+            return
 
-        news_sources = [
-            # "https://api.coindesk.com/v1/posts/solana",
-            # Add actual news API endpoints here
-        ]
-
+        now = time.time()
         posted_count = 0
-        max_posts_per_hour = 3
+        max_posts_per_cycle = 3
 
-        # Placeholder: In production, fetch from actual APIs
-        logger.debug("News fetch loop running (placeholder - implement actual news fetching)")
+        fetched.sort(
+            key=lambda x: (x.get('relevance_score', 0), x.get('published_ts', 0)),
+            reverse=True,
+        )
 
-        # Example of how you'd post news:
-        # news_items = await self._fetch_from_sources(news_sources)
-        # for item in news_items[:max_posts_per_hour - posted_count]:
-        #     if await self.broadcast_news(item):
-        #         posted_count += 1
+        for item in fetched:
+            if posted_count >= max_posts_per_cycle:
+                break
+            news_id = item.get('news_id')
+            if not news_id:
+                continue
 
-    async def _fetch_from_sources(self, sources: List[str]) -> List[Dict]:
-        """Fetch news from verified sources."""
-        news_items = []
+            if now - self._posted_news.get(news_id, 0) < 24 * 3600:
+                continue
 
-        async with aiohttp.ClientSession() as session:
-            for source_url in sources:
+            if await self.broadcast_news(item):
+                self._posted_news[news_id] = now
+                posted_count += 1
+                await asyncio.sleep(1.0)
+
+        self._cleanup_posted_news()
+        logger.info(f"News cycle complete: fetched={len(fetched)} posted={posted_count}")
+
+    async def _fetch_from_sources(self, sources: List[Dict]) -> List[Dict]:
+        """Fetch and parse RSS/Atom news from configured sources."""
+        news_items: List[Dict] = []
+        seen_ids: Set[str] = set()
+        headers = {'User-Agent': 'KopytraderBot/1.0 (+https://t.me/Kopytraderbot)'}
+
+        async with aiohttp.ClientSession(headers=headers) as session:
+            for source in sources:
+                source_url = source.get('url')
+                source_name = source.get('name', 'Unknown Source')
+                source_weight = float(source.get('weight', 1.0))
+                if not source_url:
+                    continue
+
                 try:
                     async with session.get(source_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            # Parse and filter for Solana-related news
-                            # This is a placeholder - implement actual parsing
-                            pass
+                        if resp.status != 200:
+                            continue
+                        body = await resp.text()
+                        parsed = self._parse_feed_items(body, source_name, source_weight)
+                        for item in parsed:
+                            news_id = item.get('news_id')
+                            if news_id and news_id not in seen_ids:
+                                seen_ids.add(news_id)
+                                news_items.append(item)
                 except Exception as e:
                     logger.error(f"Failed to fetch news from {source_url}: {e}")
 
         return news_items
 
+    def _cleanup_posted_news(self):
+        """Remove stale posted-news ids (48h window)."""
+        cutoff = time.time() - (48 * 3600)
+        self._posted_news = {
+            news_id: ts for news_id, ts in self._posted_news.items()
+            if ts >= cutoff
+        }
+
+    def _parse_feed_items(self, xml_text: str, source_name: str, source_weight: float) -> List[Dict]:
+        """Parse RSS/Atom XML into normalized news items."""
+        items: List[Dict] = []
+        try:
+            root = ET.fromstring(xml_text)
+        except Exception:
+            return items
+
+        for entry in root.findall('.//channel/item')[:25]:
+            title = self._clean_text(self._xml_text(entry.find('title')))
+            link = self._clean_link(self._xml_text(entry.find('link')))
+            summary = self._clean_text(
+                self._xml_text(entry.find('description')) or self._xml_text(entry.find('content'))
+            )
+            published = self._xml_text(entry.find('pubDate'))
+            normalized = self._build_news_item(
+                title, summary, link, source_name, source_weight, published
+            )
+            if normalized:
+                items.append(normalized)
+
+        atom_ns = '{http://www.w3.org/2005/Atom}'
+        for entry in root.findall(f'.//{atom_ns}entry')[:25]:
+            title = self._clean_text(self._xml_text(entry.find(f'{atom_ns}title')))
+            summary = self._clean_text(
+                self._xml_text(entry.find(f'{atom_ns}summary'))
+                or self._xml_text(entry.find(f'{atom_ns}content'))
+            )
+            link_node = entry.find(f'{atom_ns}link')
+            link = self._clean_link(link_node.attrib.get('href', '')) if link_node is not None else ''
+            published = (
+                self._xml_text(entry.find(f'{atom_ns}updated'))
+                or self._xml_text(entry.find(f'{atom_ns}published'))
+            )
+            normalized = self._build_news_item(
+                title, summary, link, source_name, source_weight, published
+            )
+            if normalized:
+                items.append(normalized)
+
+        return items
+
+    def _build_news_item(
+        self,
+        title: str,
+        summary: str,
+        link: str,
+        source_name: str,
+        source_weight: float,
+        published_raw: str,
+    ) -> Optional[Dict]:
+        if not title or not link:
+            return None
+
+        relevance = self._score_news_relevance(title, summary, source_weight)
+        if relevance < 60:
+            return None
+
+        news_id = hashlib.md5(f"{title}|{link}".encode('utf-8', errors='ignore')).hexdigest()
+        return {
+            'headline': title[:220],
+            'summary': summary[:500],
+            'source_link': link,
+            'source_name': source_name,
+            'relevance_score': relevance,
+            'published_at': published_raw or '',
+            'published_ts': self._parse_timestamp(published_raw),
+            'news_id': news_id,
+        }
+
+    def _score_news_relevance(self, title: str, summary: str, source_weight: float = 1.0) -> float:
+        """Simple Solana relevance scoring for news ranking."""
+        text = f"{title} {summary}".lower()
+        score = 0.0
+
+        if any(k in text for k in ['solana', 'sol ', '$sol', 'sol/']):
+            score += 45
+
+        ecosystem_keywords = [
+            'jupiter', 'raydium', 'phantom', 'drift', 'helius', 'pyth',
+            'jito', 'firedancer', 'validator', 'rpc', 'pump.fun', 'meteora'
+        ]
+        score += 8 * sum(1 for k in ecosystem_keywords if k in text)
+
+        high_impact = [
+            'sec', 'etf', 'lawsuit', 'settlement', 'hack', 'exploit', 'outage',
+            'mainnet', 'upgrade', 'partnership', 'funding', 'integration'
+        ]
+        score += 6 * sum(1 for k in high_impact if k in text)
+
+        if len(summary) > 80:
+            score += 5
+        if 'opinion' in text or 'sponsored' in text:
+            score -= 15
+
+        score += (source_weight - 1.0) * 20
+        return max(0.0, min(100.0, round(score, 2)))
+
+    def _parse_timestamp(self, value: str) -> float:
+        if not value:
+            return 0.0
+        try:
+            dt = parsedate_to_datetime(value)
+            return dt.timestamp() if dt else 0.0
+        except Exception:
+            pass
+        try:
+            return datetime.fromisoformat(value.replace('Z', '+00:00')).timestamp()
+        except Exception:
+            return 0.0
+
+    def _xml_text(self, node) -> str:
+        if node is None:
+            return ''
+        return (node.text or '').strip()
+
+    def _clean_link(self, link: str) -> str:
+        link = (link or '').strip()
+        parsed = urlparse(link)
+        if parsed.scheme in ('http', 'https') and parsed.netloc:
+            return link
+        return ''
+
+    def _clean_text(self, value: str) -> str:
+        text = html.unescape(value or '')
+        text = re.sub(r'<[^>]+>', ' ', text)
+        text = re.sub(r'\\s+', ' ', text).strip()
+        return text
+
 
 # Singleton instance
 broadcaster = TelegramBroadcaster()
+

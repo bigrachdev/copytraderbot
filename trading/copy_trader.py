@@ -1194,6 +1194,16 @@ class CopyTradingEngine:
             await tg_broadcaster.broadcast_signal(signal_data)
             logger.info(f"📢 Broadcasted copy signal for {token_name}")
 
+            # Notify admins
+            await notification_engine.notify_admins(
+                f"🐋 *Copy Trade Executed*\n"
+                f"User ID: `{user_id}`\n"
+                f"Token: `{token_name}`\n"
+                f"Amount: `{amount:.4f} SOL`\n"
+                f"Whale: `{whale_wallet[:12]}...`\n"
+                f"Signals: `{signal_count}` | Confidence: `{confidence}`"
+            )
+
         except Exception as e:
             logger.error(f"Failed to broadcast copy signal: {e}")
 

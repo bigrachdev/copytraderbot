@@ -29,6 +29,7 @@ class SmartNotificationEngine:
         self.active_positions = {}  # Track monitored positions
         self._send_callback = None        # async (user_id, text) -> None
         self._trade_opened_callback = None  # async (user_id, pos_id, text) -> None
+        self._admin_send_callback = None  # async (text) -> None, broadcasts to all admins
 
     def set_send_callback(self, callback):
         """Register the async callback used to send plain Telegram messages.
@@ -41,6 +42,22 @@ class SmartNotificationEngine:
         Signature: async (user_id: int, position_id: str, text: str) -> None
         """
         self._trade_opened_callback = callback
+
+    def set_admin_send_callback(self, callback):
+        """Register the async callback used to broadcast to all admins.
+        Signature: async (message: str) -> None
+        """
+        self._admin_send_callback = callback
+
+    async def notify_admins(self, message: str):
+        """Send a notification to all admins about bot usage."""
+        if self._admin_send_callback is None:
+            logger.debug("Admin notification skipped — no admin callback registered")
+            return
+        try:
+            await self._admin_send_callback(message)
+        except Exception as e:
+            logger.error(f"Error sending admin notification: {e}")
 
     async def notify_user(self, user_id: int, message: str):
         """Send a plain text notification to a user via the registered Telegram callback."""

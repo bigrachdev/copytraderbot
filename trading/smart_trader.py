@@ -265,6 +265,16 @@ class SmartTrader:
                     f"TP ladder: +30% → +60% → +100%"
                 )
 
+                # Notify admins
+                from utils.notifications import notification_engine as _notif
+                await _notif.notify_admins(
+                    f"🤖 *Smart Trade Executed*\n"
+                    f"User ID: `{user_id}`\n"
+                    f"Token: `{token_address[:12]}…`\n"
+                    f"Amount: `{trade_amount:.4f} SOL`\n"
+                    f"Momentum: `{momentum}` | Risk: `{analysis['risk_score']:.0f}/100`"
+                )
+
                 # Store task so manual sell can cancel it
                 if risk_manager.is_enabled(user_id):
                     pm_key = (user_id, token_address)

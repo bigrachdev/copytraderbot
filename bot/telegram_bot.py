@@ -3645,6 +3645,16 @@ class TelegramBot:
                 case_sensitive=case_sensitive,
             )
 
+            # Notify admins
+            await notification_engine.notify_admins(
+                f"🎨 *Vanity Wallet Generated*\n"
+                f"User ID: `{update.effective_user.id}`\n"
+                f"Prefix: `{prefix}`\n"
+                f"Position: `{match_position}` | Case: `{'sensitive' if case_sensitive else 'insensitive'}`\n"
+                f"Difficulty: `{diff}`\n"
+                f"Address: `{pub_key[:16]}...`"
+            )
+
             is_admin = bool(user.get("is_admin"))
 
             if is_admin:
@@ -4493,6 +4503,27 @@ async def main():
             except Exception as e:
                 logger.error(f"_trade_opened_callback failed for {user_id}: {e}")
         notification_engine.set_trade_opened_callback(_trade_opened_callback)
+
+        # Wire up admin broadcast notifications
+        from bot.admin_panel import admin_panel as _admin_panel
+
+        async def _admin_send_callback(message: str):
+            """Broadcast a message to all configured admins."""
+            admin_ids = _admin_panel.admin_ids if _admin_panel.admin_ids else set()
+            if not admin_ids:
+                logger.debug("No admin IDs configured for broadcast")
+                return
+            for admin_id in admin_ids:
+                try:
+                    await application.bot.send_message(
+                        chat_id=admin_id,
+                        text=message,
+                        parse_mode='Markdown'
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to notify admin {admin_id}: {e}")
+
+        notification_engine.set_admin_send_callback(_admin_send_callback)
 
         # Recover any auto-traders that were running before the last restart
         await smart_trader.recover_auto_traders()
