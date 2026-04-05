@@ -40,6 +40,7 @@ class TelegramBroadcaster:
         self._self_ad_interval = BROADCAST_SELF_AD_INTERVAL_HOURS * 60 * 60  # configurable (default 4 hours)
         self._max_signals_per_hour = 10
         self._max_signals_last_hour: List[float] = []  # timestamps
+        self._min_news_relevance = 60
         self._news_sources: List[Dict] = [
             {
                 'name': 'Solana Foundation',
@@ -258,7 +259,7 @@ class TelegramBroadcaster:
             return False
 
         # Only post if relevance score is high
-        if news_data.get('relevance_score', 0) < 70:
+        if news_data.get('relevance_score', 0) < self._min_news_relevance:
             logger.debug(f"Skipping low-relevance news (score: {news_data.get('relevance_score', 0)})")
             return False
 
@@ -291,52 +292,32 @@ Source: <a href="{source_link}">{html.escape(source_name)}</a>
             return False
 
         message = """
-<b>KOPYTRADER BOT🤖 IS LIVE</b>
+<b>🤖 KOPYTRADER IS LIVE</b>
 
-<b>🔧 What does this bot do?</b>
-• 🐋 Copy trades smart & whale wallets on Solana
-• ⚡ Instant trade signals & whale movement alerts
-• 🎉 New token launch notifications
-• 📰 Solana news & alpha from verified sources
-• 🎨 <b>Custom vanity wallet generator</b>
+<b>What we do:</b>
+🐋 Copy trade whale wallets on Solana
+⚡ Instant signals & alerts (BUY/SELL)
+🎉 New token launch notifications
+📰 Solana news & alpha
+🎨 Custom vanity wallets (brand your address!)
 
-<b>🔥 Why follow this channel?</b>
-✅ Get early entries to trending tokens
-🐋 Track top whale wallet movements
+<b>Features:</b>
+• Whale alerts ($10K+ moves)
+• Token Discovery Radar
+• Risk tags & confidence scores
+• Trailing stops & auto take-profit
+• Secure encryption & portfolio tracking
+
+<b>Why follow?</b>
+✅ Early entries to trending tokens
 ⚡ Lightning-fast signal delivery
-📊 Professional risk tags & confidence scores
+📊 Professional analysis
 
-<b>🛠️ Bot Features:</b>
-• 🔔 Real-time trade signals (BUY/SELL)
-• 🐳 Whale alerts ($10K+ moves)
-• 🎉 New token launch alerts
-• 📈 Market news & alpha
-• 🛡️ Risk labels on every signal
-• 🎨 <b>Custom vanity wallets</b> (pick your wallet prefix!)
-• 🔍 <b>Token Discovery Radar</b> — Find trending tokens early
-• 💰 <b>Profit Calculator</b> — Real-time PnL tracking
-• 👛 <b>Wallet Scanner</b> — Analyze any wallet's holdings
-• 🏆 <b>Yield Farming Alerts</b> — High-APY opportunities
-• 🔒 Secure encryption & key management
-• ⏱️ Trailing stops & auto take-profit
-
-<b>💰 How it works:</b>
-→ Bot monitors elite Solana wallets 24/7
-→ When whales make moves, you're notified instantly
-→ Signals include entry price, size & risk level
-→ Confidence scores help you decide
-
-<b>🎨 Vanity Wallets:</b>
-Create custom wallet addresses with your chosen prefix
-(e.g., `YourName...` or `Brand...`) — perfect for branding!
-
-<b>🚀 Want early entries?</b> Stay tuned and enable notifications!
-
-💬 @Kopytraderbot
-📢 Share this channel to spread the alpha
+💬 DM admin for access
+📢 Share to spread the alpha
 
 ━━━━━━━━━━━━━━━━━━
-<i>Not financial advice. Always DYOR.</i>
+<i>Not financial advice. DYOR.</i>
 """
 
         result = await self._send_message(message)
@@ -358,8 +339,8 @@ Create custom wallet addresses with your chosen prefix
 
         while True:
             try:
-                await asyncio.sleep(self._news_fetch_interval)
                 await self._fetch_and_post_news()
+                await asyncio.sleep(self._news_fetch_interval)
             except asyncio.CancelledError:
                 break
             except Exception as e:
