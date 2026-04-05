@@ -254,30 +254,49 @@ class TelegramBroadcaster:
             return False
 
         message = """
-<b>🤖 SOLANA COPY TRADING BOT</b>
+<b>KOPYTRADER BOT🤖 IS LIVE</b>
 
-<b>What does this bot do?</b>
-• Copy trades smart/whale wallets on Solana
-• Real-time trade signals & whale alerts
-• New token launch notifications
-• Solana news & alpha from verified sources
+<b>🔧 What does this bot do?</b>
+• 🐋 Copy trades smart & whale wallets on Solana
+• ⚡ Instant trade signals & whale movement alerts
+• 🎉 New token launch notifications
+• 📰 Solana news & alpha from verified sources
+• 🎨 <b>Custom vanity wallet generator</b>
 
-<b>Why follow this channel?</b>
-🔥 Get early entries to trending tokens
-🐋 Track whale wallet movements
+<b>🔥 Why follow this channel?</b>
+✅ Get early entries to trending tokens
+🐋 Track top whale wallet movements
 ⚡ Lightning-fast signal delivery
-📊 Professional analysis & risk tags
+📊 Professional risk tags & confidence scores
 
-<b>How it works:</b>
-→ Bot monitors top Solana wallets 24/7
-→ When whales move, we notify instantly
-→ You get signals with entry/exit data
-→ Includes confidence scores & risk labels
+<b>🛠️ Bot Features:</b>
+• 🔔 Real-time trade signals (BUY/SELL)
+• 🐳 Whale alerts ($10K+ moves)
+• 🎉 New token launch alerts
+• 📈 Market news & alpha
+• 🛡️ Risk labels on every signal
+• 🎨 <b>Custom vanity wallets</b> (pick your wallet prefix!)
+• 🔍 <b>Token Discovery Radar</b> — Find trending tokens early
+• 💰 <b>Profit Calculator</b> — Real-time PnL tracking
+• 👛 <b>Wallet Scanner</b> — Analyze any wallet's holdings
+• 🏆 <b>Yield Farming Alerts</b> — High-APY opportunities
+• 🔒 Secure encryption & key management
+• ⏱️ Trailing stops & auto take-profit
 
-<b> Want early entries? Stay tuned!</b>
+<b>💰 How it works:</b>
+→ Bot monitors elite Solana wallets 24/7
+→ When whales make moves, you're notified instantly
+→ Signals include entry price, size & risk level
+→ Confidence scores help you decide
 
-💬 DM admin for whitelist access
-📢 Share this channel with friends
+<b>🎨 Vanity Wallets:</b>
+Create custom wallet addresses with your chosen prefix
+(e.g., `YourName...` or `Brand...`) — perfect for branding!
+
+<b>🚀 Want early entries?</b> Stay tuned and enable notifications!
+
+💬 @Kopytraderbot
+📢 Share this channel to spread the alpha
 
 ━━━━━━━━━━━━━━━━━━
 <i>Not financial advice. Always DYOR.</i>
