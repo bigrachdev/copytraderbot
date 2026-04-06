@@ -1161,11 +1161,15 @@ class CopyTradingEngine:
     ):
         """Broadcast copy trade signal to Telegram channel."""
         try:
+            logger.info(f"📢 Preparing to broadcast copy signal for user {user_id}, token {token_address[:12]}…")
+            
             from trading.token_analyzer import token_analyzer
             # Fetch token metadata for better signal
+            logger.info("🔍 Fetching token info for signal broadcast...")
             token_info = await token_analyzer.get_token_info(token_address)
             token_name = token_info.get('name', 'Unknown Token') if token_info else 'Unknown Token'
             liquidity = token_info.get('liquidity_usd', 0) if token_info else 0
+            logger.info(f"✅ Token info fetched: {token_name}, liquidity=${liquidity:.0f}")
 
             # Determine confidence based on signal count
             if signal_count >= 3:
@@ -1174,6 +1178,7 @@ class CopyTradingEngine:
                 confidence = 'MEDIUM'
             else:
                 confidence = 'LOW'
+            logger.info(f"📊 Signal confidence: {confidence} ({signal_count} whales)")
 
             # Build DexScreener URL
             dexscreener_url = f"https://dexscreener.com/solana/{token_address}"
@@ -1191,8 +1196,12 @@ class CopyTradingEngine:
                 'liquidity_usd': liquidity,
             }
 
-            await tg_broadcaster.broadcast_signal(signal_data)
-            logger.info(f"📢 Broadcasted copy signal for {token_name}")
+            logger.info(f"📤 Calling broadcaster.broadcast_signal...")
+            result = await tg_broadcaster.broadcast_signal(signal_data)
+            if result:
+                logger.info(f"📢 Successfully broadcasted copy signal for {token_name}")
+            else:
+                logger.warning(f"⚠️ Broadcast signal returned False for {token_name}")
 
             # Broadcast whale alert if trade size > $10k
             # Estimate USD value from SOL amount (use rough SOL price or skip if unknown)
@@ -1200,6 +1209,7 @@ class CopyTradingEngine:
             usd_value = amount * sol_price_usd
             if usd_value > 10000:
                 try:
+                    logger.info(f"🐋 Whale alert threshold met: ${usd_value:,.2f}")
                     alert_data = {
                         'wallet_label': token_name,  # Use token name as context
                         'wallet_address': whale_wallet,
@@ -1226,7 +1236,7 @@ class CopyTradingEngine:
             )
 
         except Exception as e:
-            logger.error(f"Failed to broadcast copy signal: {e}")
+            logger.error(f"Failed to broadcast copy signal: {e}", exc_info=True)
 
 
 # Singleton instance

@@ -40,7 +40,14 @@ class TelegramBroadcaster:
         self._self_ad_interval = BROADCAST_SELF_AD_INTERVAL_HOURS * 60 * 60  # configurable (default 4 hours)
         self._max_signals_per_hour = 10
         self._max_signals_last_hour: List[float] = []  # timestamps
-        self._min_news_relevance = 60
+        
+        # Configurable thresholds - can be overridden via environment variables
+        import os
+        self._min_liquidity_usd = int(os.getenv('BROADCAST_MIN_LIQUIDITY_USD', '30000'))
+        self._min_news_relevance = float(os.getenv('BROADCAST_MIN_NEWS_RELEVANCE', '60'))
+        
+        logger.info(f"📊 Broadcast thresholds: liquidity=${self._min_liquidity_usd:,}, news relevance={self._min_news_relevance}")
+        
         self._news_sources: List[Dict] = [
             {
                 'name': 'Solana Foundation',
@@ -72,21 +79,27 @@ class TelegramBroadcaster:
     async def initialize(self):
         """Initialize the bot and start background tasks."""
         if not self.bot_token or not self.channel_id:
-            logger.warning("Telegram broadcast not configured (missing BOT_TOKEN or CHANNEL_ID)")
+            logger.warning("⚠️ Telegram broadcast not configured: BOT_TOKEN=%s, CHANNEL_ID=%s", 
+                          'SET' if self.bot_token else 'MISSING', 
+                          self.channel_id or 'MISSING')
             return
 
         try:
             self.bot = Bot(token=self.bot_token)
             # Verify bot can access channel
             chat = await self.bot.get_chat(self.channel_id)
-            logger.info(f"✅ Telegram broadcaster initialized for channel: {chat.title}")
+            logger.info(f"✅ Telegram broadcaster initialized for channel: {chat.title} (ID: {self.channel_id})")
 
             # Post self-ad on startup
+            logger.info("📢 Posting self-advertisement on startup...")
             await self.post_self_ad()
 
             # Start background loops
+            logger.info(f"📰 Starting news loop (interval: {BROADCAST_NEWS_INTERVAL_MINUTES} minutes)")
             asyncio.create_task(self._news_loop())
+            logger.info(f"📢 Starting self-ad loop (interval: {BROADCAST_SELF_AD_INTERVAL_HOURS} hours)")
             asyncio.create_task(self._self_ad_loop())
+            logger.info("✅ All background broadcast tasks started")
 
         except TelegramError as e:
             logger.error(f"Failed to initialize Telegram broadcaster: {e}")
@@ -98,7 +111,7 @@ class TelegramBroadcaster:
     async def broadcast_signal(self, signal_data: Dict) -> bool:
         """
         Broadcast a trade signal when a tracked wallet makes a move.
-        
+
         Args:
             signal_data: {
                 'token_name': str,
@@ -113,18 +126,24 @@ class TelegramBroadcaster:
                 'liquidity_usd': float,
             }
         """
+        logger.info(f"📢 Attempting to broadcast signal: {signal_data.get('token_name', 'Unknown')}")
+        
         if not self.bot:
+            logger.warning("⚠️ Cannot broadcast signal: Telegram bot not initialized")
             return False
 
         # Safety checks
         if not await self._check_rate_limits(signal_data):
+            logger.warning("⚠️ Signal blocked by rate limits or duplicate detection")
             return False
 
-        # Skip tokens with low liquidity (< $30k)
+        # Skip tokens with low liquidity
         liquidity = signal_data.get('liquidity_usd', 0)
-        if liquidity < 30000:
-            logger.debug(f"Skipping signal for low liquidity token: ${liquidity:.0f}")
+        if liquidity < self._min_liquidity_usd:
+            logger.warning(f"⚠️ Signal skipped: Low liquidity ${liquidity:.0f} < ${self._min_liquidity_usd:,} threshold")
             return False
+        else:
+            logger.info(f"✅ Liquidity check passed: ${liquidity:.0f} >= ${self._min_liquidity_usd:,}")
 
         # Build message
         confidence_emoji = {'HIGH': '🔥', 'MEDIUM': '⚡', 'LOW': '👀'}
@@ -258,10 +277,13 @@ class TelegramBroadcaster:
         if not self.bot:
             return False
 
-        # Only post if relevance score is high
-        if news_data.get('relevance_score', 0) < self._min_news_relevance:
-            logger.debug(f"Skipping low-relevance news (score: {news_data.get('relevance_score', 0)})")
+        # Only post if relevance score meets minimum threshold
+        relevance = news_data.get('relevance_score', 0)
+        if relevance < self._min_news_relevance:
+            logger.debug(f"Skipping low-relevance news (score: {relevance:.1f} < {self._min_news_relevance:.1f})")
             return False
+        else:
+            logger.info(f"✅ News relevance check passed: {relevance:.1f} >= {self._min_news_relevance:.1f}")
 
         headline = self._clean_text(news_data.get('headline', ''))
         summary = self._clean_text(news_data.get('summary', ''))
@@ -370,6 +392,7 @@ Source: <a href="{source_link}">{html.escape(source_name)}</a>
     async def _send_message(self, message: str) -> bool:
         """Send message to Telegram channel."""
         if not self.bot or not self.channel_id:
+            logger.warning(f"⚠️ Cannot send message: bot={'SET' if self.bot else 'NONE'}, channel_id={self.channel_id or 'NONE'}")
             return False
 
         try:
@@ -377,14 +400,17 @@ Source: <a href="{source_link}">{html.escape(source_name)}</a>
             # Keep a safe buffer for formatting and future edits.
             max_chars = 3900
             if len(message) > max_chars:
+                logger.warning(f"⚠️ Message truncated from {len(message)} to {max_chars} chars")
                 message = message[:max_chars - 3] + "..."
 
+            logger.info(f"📤 Sending message to channel {self.channel_id} ({len(message)} chars)")
             await self.bot.send_message(
                 chat_id=self.channel_id,
                 text=message,
                 parse_mode='HTML',
                 disable_web_page_preview=False,
             )
+            logger.info("✅ Message sent successfully")
             return True
 
         except TelegramError as e:
@@ -441,13 +467,14 @@ Source: <a href="{source_link}">{html.escape(source_name)}</a>
 
     async def _fetch_and_post_news(self):
         """Fetch Solana news from verified sources and post relevant items."""
-        logger.info("📰 Starting news fetch cycle...")
+        logger.info("📰 ====== Starting news fetch cycle ======")
         fetched = await self._fetch_from_sources(self._news_sources)
         if not fetched:
-            logger.warning("⚠️ No news items fetched from configured sources - check RSS feeds or network")
+            logger.warning("⚠️ No news items fetched from configured sources - check RSS feeds or network connectivity")
+            logger.warning("⚠️ Sources configured: {[s['name'] for s in self._news_sources]}")
             return
 
-        logger.info(f"📰 Fetched {len(fetched)} news items, filtering by relevance...")
+        logger.info(f"📰 Fetched {len(fetched)} total news items from all sources, filtering by relevance...")
 
         now = time.time()
         posted_count = 0
@@ -458,20 +485,31 @@ Source: <a href="{source_link}">{html.escape(source_name)}</a>
             reverse=True,
         )
 
-        for item in fetched:
+        for idx, item in enumerate(fetched, 1):
             if posted_count >= max_posts_per_cycle:
+                logger.info(f"⏹️ Max posts per cycle ({max_posts_per_cycle}) reached")
                 break
+                
             news_id = item.get('news_id')
             if not news_id:
+                logger.debug(f"News item #{idx} skipped: no news_id")
                 continue
 
+            # Check if already posted in last 24 hours
             if now - self._posted_news.get(news_id, 0) < 24 * 3600:
+                logger.debug(f"News item #{idx} already posted within 24h: {item.get('headline', '')[:60]}")
                 continue
 
+            # Log attempt
+            logger.info(f"📝 Attempting to post news #{idx}: score={item.get('relevance_score', 0)}, title={item.get('headline', '')[:60]}")
+            
             if await self.broadcast_news(item):
                 self._posted_news[news_id] = now
                 posted_count += 1
+                logger.info(f"✅ News posted #{posted_count}: {item.get('headline', '')[:60]}")
                 await asyncio.sleep(1.0)
+            else:
+                logger.warning(f"⚠️ Failed to post news #{idx}")
 
         self._cleanup_posted_news()
         logger.info(f"✅ News cycle complete: fetched={len(fetched)} posted={posted_count}")
@@ -488,25 +526,30 @@ Source: <a href="{source_link}">{html.escape(source_name)}</a>
                 source_name = source.get('name', 'Unknown Source')
                 source_weight = float(source.get('weight', 1.0))
                 if not source_url:
+                    logger.warning(f"⚠️ Source {source_name} has no URL, skipping")
                     continue
 
                 try:
                     logger.debug(f"📰 Fetching from {source_name}: {source_url}")
-                    async with session.get(source_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    async with session.get(source_url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                         if resp.status != 200:
                             logger.warning(f"⚠️ Failed to fetch from {source_name}: HTTP {resp.status}")
                             continue
                         body = await resp.text()
+                        logger.debug(f"📄 {source_name}: Received {len(body)} bytes")
                         parsed = self._parse_feed_items(body, source_name, source_weight)
-                        logger.debug(f"✅ {source_name}: parsed {len(parsed)} items")
+                        logger.info(f"✅ {source_name}: parsed {len(parsed)} items")
                         for item in parsed:
                             news_id = item.get('news_id')
                             if news_id and news_id not in seen_ids:
                                 seen_ids.add(news_id)
                                 news_items.append(item)
+                except asyncio.TimeoutError:
+                    logger.error(f"⏱️ Timeout fetching news from {source_name}")
                 except Exception as e:
                     logger.error(f"❌ Failed to fetch news from {source_url}: {e}")
 
+        logger.info(f"📊 Total unique news items collected: {len(news_items)}")
         return news_items
 
     def _cleanup_posted_news(self):

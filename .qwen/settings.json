@@ -1,7 +1,12 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python *)"
+      "Bash(python *)",
+      "Bash(findstr *)",
+      "Bash(dir *)",
+      "WebFetch(solana.com)",
+      "WebFetch(www.coindesk.com)",
+      "Bash(pip install *)"
     ]
   },
   "$version": 3

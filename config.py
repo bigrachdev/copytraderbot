@@ -14,6 +14,8 @@ TELEGRAM_CHANNEL_ID   = os.getenv('TELEGRAM_CHANNEL_ID')
 # ── Telegram Broadcasting ────────────────────────────────────────────────────
 BROADCAST_NEWS_INTERVAL_MINUTES  = int(os.getenv('BROADCAST_NEWS_INTERVAL_MINUTES', '30'))
 BROADCAST_SELF_AD_INTERVAL_HOURS = int(os.getenv('BROADCAST_SELF_AD_INTERVAL_HOURS', '4'))
+BROADCAST_MIN_LIQUIDITY_USD      = int(os.getenv('BROADCAST_MIN_LIQUIDITY_USD', '30000'))
+BROADCAST_MIN_NEWS_RELEVANCE     = float(os.getenv('BROADCAST_MIN_NEWS_RELEVANCE', '60'))
 
 # Fail fast if required env vars are missing
 _REQUIRED_ENV = ['TELEGRAM_BOT_TOKEN', 'ENCRYPTION_MASTER_PASSWORD']
