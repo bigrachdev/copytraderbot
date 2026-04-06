@@ -31,7 +31,7 @@ class TelegramBroadcaster:
 
     def __init__(self):
         self.bot_token = TELEGRAM_BOT_TOKEN
-        self.channel_id = TELEGRAM_CHANNEL_ID
+        self.channel_id = self._normalize_channel_id(TELEGRAM_CHANNEL_ID)
         self.bot: Optional[Bot] = None
         self._last_post_times: Dict[str, float] = {}  # type -> timestamp
         
@@ -92,12 +92,47 @@ class TelegramBroadcaster:
             },
         ]
 
+    @staticmethod
+    def _normalize_channel_id(raw_channel_id: Optional[str]) -> Optional[str]:
+        """Normalize TELEGRAM_CHANNEL_ID and strip accidental inline comments."""
+        if not raw_channel_id:
+            return raw_channel_id
+        if isinstance(raw_channel_id, str):
+            # Accept values like: -1001234567890  # main channel
+            value = raw_channel_id.split('#', 1)[0].strip()
+            return value
+        return str(raw_channel_id)
+
+    @staticmethod
+    def _is_placeholder_channel_id(channel_id: Optional[str]) -> bool:
+        """Detect common placeholder channel ids that should not be used in production."""
+        if not channel_id:
+            return True
+        cid = str(channel_id).strip().lower()
+        return (
+            'xxxx' in cid
+            or 'your_channel_id' in cid
+            or cid in ('-100xxxxxxxxxx', 'channel_id_here')
+        )
+
+    @staticmethod
+    def _safe_text(value: object) -> str:
+        """Escape text values for HTML parse mode."""
+        return html.escape(str(value or ''))
+
     async def initialize(self):
         """Initialize the bot and start background tasks."""
         if not self.bot_token or not self.channel_id:
             logger.warning("⚠️ Telegram broadcast not configured: BOT_TOKEN=%s, CHANNEL_ID=%s", 
                           'SET' if self.bot_token else 'MISSING', 
                           self.channel_id or 'MISSING')
+            return
+        if self._is_placeholder_channel_id(self.channel_id):
+            logger.error(
+                "❌ TELEGRAM_CHANNEL_ID appears to be a placeholder (%s). "
+                "Set a real channel id like -1001234567890.",
+                self.channel_id
+            )
             return
 
         try:
@@ -166,22 +201,27 @@ class TelegramBroadcaster:
         confidence = signal_data.get('confidence', 'MEDIUM')
         emoji = confidence_emoji.get(confidence, '⚡')
 
-        wallet = signal_data['wallet_address']
+        token_name = self._safe_text(signal_data.get('token_name', 'Unknown Token'))
+        token_address = self._safe_text(signal_data.get('token_address', 'N/A'))
+        wallet = str(signal_data.get('wallet_address', 'unknown'))
         wallet_short = f"{wallet[:4]}...{wallet[-4:]}" if len(wallet) > 8 else wallet
+        wallet_short = self._safe_text(wallet_short)
+        action = self._safe_text(signal_data.get('action', 'BUY'))
+        dexscreener_url = self._safe_text(signal_data.get('dexscreener_url', 'N/A'))
 
         message = f"""
 <b>🚨 TRADE SIGNAL</b>
 
-<b>Token:</b> <code>{signal_data['token_name']}</code>
-<b>CA:</b> <code>{signal_data['token_address']}</code>
+<b>Token:</b> <code>{token_name}</code>
+<b>CA:</b> <code>{token_address}</code>
 
-<b>Action:</b> {signal_data['action']}
+<b>Action:</b> {action}
 <b>Size:</b> {signal_data.get('size_sol', 0):.4f} SOL (${signal_data.get('size_usd', 0):.2f})
 
 <b>Source Wallet:</b> <code>{wallet_short}</code>
 
 <b>Entry Price:</b> ${signal_data['entry_price']:.8f}
-<b>DexScreener:</b> {signal_data.get('dexscreener_url', 'N/A')}
+<b>DexScreener:</b> {dexscreener_url}
 
 <b>Confidence:</b> {emoji} {confidence}
 
@@ -210,19 +250,23 @@ class TelegramBroadcaster:
         if not self.bot:
             return False
 
-        wallet = alert_data['wallet_label'] or (
-            f"{alert_data['wallet_address'][:4]}...{alert_data['wallet_address'][-4:]}"
-        )
+        wallet = str(alert_data.get('wallet_label') or (
+            f"{alert_data.get('wallet_address', 'unknown')[:4]}...{alert_data.get('wallet_address', 'unknown')[-4:]}"
+        ))
+        wallet = self._safe_text(wallet)
+        action = self._safe_text(alert_data.get('action', 'BUY'))
+        token_name = self._safe_text(alert_data.get('token_name', 'Unknown Token'))
+        tx_hash = self._safe_text(alert_data.get('tx_hash', 'N/A'))
 
-        solscan_url = f"https://solscan.io/tx/{alert_data['tx_hash']}"
+        solscan_url = f"https://solscan.io/tx/{tx_hash}"
 
         message = f"""
 <b>🐋 WHALE ALERT</b>
 
 <b>Wallet:</b> <code>{wallet}</code>
 
-<b>Action:</b> {alert_data['action']}
-<b>Token:</b> <code>{alert_data['token_name']}</code>
+<b>Action:</b> {action}
+<b>Token:</b> <code>{token_name}</code>
 <b>Amount:</b> {alert_data['amount']:.4f}
 
 <b>USD Value:</b> ${alert_data['usd_value']:,.2f}
@@ -255,22 +299,28 @@ class TelegramBroadcaster:
             return False
 
         risk_emoji = {'DEGEN': '⚠️', 'OKAY': '✅', 'RUG_RISK': '🚨'}
-        risk = launch_data.get('risk_label', 'DEGEN')
+        risk = str(launch_data.get('risk_label', 'DEGEN'))
         emoji = risk_emoji.get(risk, '⚠️')
+        token_name = self._safe_text(launch_data.get('token_name', 'Unknown Token'))
+        symbol = self._safe_text(launch_data.get('symbol', '?'))
+        contract_address = self._safe_text(launch_data.get('contract_address', 'N/A'))
+        platform = self._safe_text(launch_data.get('platform', 'N/A'))
+        dexscreener_url = self._safe_text(launch_data.get('dexscreener_url', 'N/A'))
+        risk_label = self._safe_text(risk.replace('_', ' '))
 
         message = f"""
 <b>🎉 TOKEN LAUNCH ALERT</b>
 
-<b>Token:</b> {launch_data['token_name']} (${launch_data['symbol']})
-<b>CA:</b> <code>{launch_data['contract_address']}</code>
+<b>Token:</b> {token_name} (${symbol})
+<b>CA:</b> <code>{contract_address}</code>
 
-<b>Platform:</b> {launch_data['platform']}
-<b>Starting Liquidity:</b> ${launch_data['liquidity_usd']:,.2f}
-<b>Pool Age:</b> {launch_data['age_minutes']:.0f} minutes
+<b>Platform:</b> {platform}
+<b>Starting Liquidity:</b> ${float(launch_data.get('liquidity_usd', 0) or 0):,.2f}
+<b>Pool Age:</b> {float(launch_data.get('age_minutes', 0) or 0):.0f} minutes
 
-<b>Risk Label:</b> {emoji} {risk.replace('_', ' ')}
+<b>Risk Label:</b> {emoji} {risk_label}
 
-<b>DexScreener:</b> {launch_data.get('dexscreener_url', 'N/A')}
+<b>DexScreener:</b> {dexscreener_url}
 
 ━━━━━━━━━━━━━━━━━━
 <i>Not financial advice. DYOR.</i>
@@ -445,6 +495,21 @@ Source: <a href="{source_link}">{html.escape(source_name)}</a>
             return True
 
         except TelegramError as e:
+            err = str(e)
+            # Fallback: if HTML entity parsing fails, retry plain text so alerts are not dropped.
+            if 'parse entities' in err.lower() or "can't parse" in err.lower():
+                logger.warning(f"⚠️ HTML parse failed, retrying plain text: {e}")
+                plain = re.sub(r'<[^>]+>', '', message)
+                try:
+                    await self.bot.send_message(
+                        chat_id=self.channel_id,
+                        text=plain,
+                        disable_web_page_preview=False,
+                    )
+                    logger.info("✅ Message sent successfully (plain text fallback)")
+                    return True
+                except Exception as fallback_err:
+                    logger.error(f"Fallback plain text send failed: {fallback_err}")
             logger.error(f"Failed to send Telegram message: {e}")
             return False
         except Exception as e:
