@@ -292,7 +292,7 @@ Source: <a href="{source_link}">{html.escape(source_name)}</a>
             return False
 
         message = """
-<b>🤖 KOPYTRADER IS LIVE</b>
+<b>🤖 KOPYTRADER BOT IS LIVE</b>
 
 <b>What we do:</b>
 🐋 Copy trade whale wallets on Solana
@@ -313,11 +313,10 @@ Source: <a href="{source_link}">{html.escape(source_name)}</a>
 ⚡ Lightning-fast signal delivery
 📊 Professional analysis
 
-💬 DM admin for access
-📢 Share to spread the alpha
+💬 Send /start to @Kopytraderbot
+🤖 Work smart not hard
 
 ━━━━━━━━━━━━━━━━━━
-<i>Not financial advice. DYOR.</i>
 """
 
         result = await self._send_message(message)
@@ -442,10 +441,13 @@ Source: <a href="{source_link}">{html.escape(source_name)}</a>
 
     async def _fetch_and_post_news(self):
         """Fetch Solana news from verified sources and post relevant items."""
+        logger.info("📰 Starting news fetch cycle...")
         fetched = await self._fetch_from_sources(self._news_sources)
         if not fetched:
-            logger.debug("No news items fetched from configured sources")
+            logger.warning("⚠️ No news items fetched from configured sources - check RSS feeds or network")
             return
+
+        logger.info(f"📰 Fetched {len(fetched)} news items, filtering by relevance...")
 
         now = time.time()
         posted_count = 0
@@ -472,7 +474,7 @@ Source: <a href="{source_link}">{html.escape(source_name)}</a>
                 await asyncio.sleep(1.0)
 
         self._cleanup_posted_news()
-        logger.info(f"News cycle complete: fetched={len(fetched)} posted={posted_count}")
+        logger.info(f"✅ News cycle complete: fetched={len(fetched)} posted={posted_count}")
 
     async def _fetch_from_sources(self, sources: List[Dict]) -> List[Dict]:
         """Fetch and parse RSS/Atom news from configured sources."""
@@ -489,18 +491,21 @@ Source: <a href="{source_link}">{html.escape(source_name)}</a>
                     continue
 
                 try:
+                    logger.debug(f"📰 Fetching from {source_name}: {source_url}")
                     async with session.get(source_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                         if resp.status != 200:
+                            logger.warning(f"⚠️ Failed to fetch from {source_name}: HTTP {resp.status}")
                             continue
                         body = await resp.text()
                         parsed = self._parse_feed_items(body, source_name, source_weight)
+                        logger.debug(f"✅ {source_name}: parsed {len(parsed)} items")
                         for item in parsed:
                             news_id = item.get('news_id')
                             if news_id and news_id not in seen_ids:
                                 seen_ids.add(news_id)
                                 news_items.append(item)
                 except Exception as e:
-                    logger.error(f"Failed to fetch news from {source_url}: {e}")
+                    logger.error(f"❌ Failed to fetch news from {source_url}: {e}")
 
         return news_items
 

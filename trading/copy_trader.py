@@ -1194,6 +1194,27 @@ class CopyTradingEngine:
             await tg_broadcaster.broadcast_signal(signal_data)
             logger.info(f"📢 Broadcasted copy signal for {token_name}")
 
+            # Broadcast whale alert if trade size > $10k
+            # Estimate USD value from SOL amount (use rough SOL price or skip if unknown)
+            sol_price_usd = 150  # Fallback placeholder; replace with real price feed if available
+            usd_value = amount * sol_price_usd
+            if usd_value > 10000:
+                try:
+                    alert_data = {
+                        'wallet_label': token_name,  # Use token name as context
+                        'wallet_address': whale_wallet,
+                        'token_name': token_name,
+                        'token_address': token_address,
+                        'action': 'BUY',
+                        'amount': amount,
+                        'usd_value': usd_value,
+                        'tx_hash': 'N/A',  # Would need actual tx hash from swap data
+                    }
+                    await tg_broadcaster.broadcast_whale_alert(alert_data)
+                    logger.info(f"🐋 Broadcasted whale alert for ${usd_value:,.2f} trade")
+                except Exception as e:
+                    logger.error(f"Failed to broadcast whale alert: {e}")
+
             # Notify admins
             await notification_engine.notify_admins(
                 f"🐋 *Copy Trade Executed*\n"

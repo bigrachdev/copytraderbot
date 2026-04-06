@@ -450,7 +450,7 @@ class SmartTrader:
                         items = (data.get('data') or {}).get('items') or []
                         results = []
                         for item in items:
-                            results.append({
+                            token_data = {
                                 'address':       item.get('address', ''),
                                 'symbol':        item.get('symbol', '?'),
                                 'name':          item.get('name', ''),
@@ -459,7 +459,37 @@ class SmartTrader:
                                 'age_hours':     0.5,  # new listing, treat as very new
                                 'source':        'birdeye_new',
                                 'chain':         'solana',
-                            })
+                            }
+                            results.append(token_data)
+
+                            # Broadcast token launch to Telegram
+                            try:
+                                from trading.telegram_broadcaster import broadcaster as tg_broadcaster
+                                age_minutes = token_data['age_hours'] * 60
+                                # Determine risk label based on liquidity
+                                liquidity = token_data['liquidity_usd']
+                                if liquidity < 20000:
+                                    risk_label = 'RUG_RISK'
+                                elif liquidity < 50000:
+                                    risk_label = 'DEGEN'
+                                else:
+                                    risk_label = 'OKAY'
+
+                                launch_data = {
+                                    'token_name': token_data['name'],
+                                    'symbol': token_data['symbol'],
+                                    'contract_address': token_data['address'],
+                                    'platform': 'birdeye',  # Could be pump.fun or Raydium
+                                    'liquidity_usd': liquidity,
+                                    'age_minutes': age_minutes,
+                                    'risk_label': risk_label,
+                                    'dexscreener_url': f"https://dexscreener.com/solana/{token_data['address']}",
+                                }
+                                await tg_broadcaster.broadcast_token_launch(launch_data)
+                                logger.info(f"🎉 Broadcasted token launch: {token_data['name']}")
+                            except Exception as e:
+                                logger.error(f"Failed to broadcast token launch: {e}")
+
                         return results
         except Exception as e:
             logger.warning(f"Birdeye new listings error: {e}")
