@@ -34,8 +34,24 @@ class TelegramBroadcaster:
         self.channel_id = TELEGRAM_CHANNEL_ID
         self.bot: Optional[Bot] = None
         self._last_post_times: Dict[str, float] = {}  # type -> timestamp
-        self._posted_signals: Dict[str, float] = {}  # hash -> posted timestamp
-        self._posted_news: Dict[str, float] = {}  # news_id -> posted timestamp
+        
+        # Initialize posted tracking with database persistence for Render
+        try:
+            from data.database import db
+            self._posted_news = {
+                news_id: time.time()  # Use current time as placeholder
+                for news_id in db.get_posted_news_ids(hours=48)
+            }
+            self._posted_signals = {
+                sig_hash: time.time()  # Use current time as placeholder  
+                for sig_hash in db.get_posted_signal_hashes(hours=24)
+            }
+            logger.info(f"📊 Loaded posted tracking from database: {len(self._posted_news)} news, {len(self._posted_signals)} signals")
+        except Exception as e:
+            logger.warning(f"Failed to load posted tracking from database: {e}")
+            self._posted_news: Dict[str, float] = {}  # news_id -> posted timestamp
+            self._posted_signals: Dict[str, float] = {}  # hash -> posted timestamp
+        
         self._news_fetch_interval = BROADCAST_NEWS_INTERVAL_MINUTES * 60  # configurable (default 30 minutes)
         self._self_ad_interval = BROADCAST_SELF_AD_INTERVAL_HOURS * 60 * 60  # configurable (default 4 hours)
         self._max_signals_per_hour = 10
@@ -314,31 +330,46 @@ Source: <a href="{source_link}">{html.escape(source_name)}</a>
             return False
 
         message = """
-<b>🤖 KOPYTRADER BOT IS LIVE</b>
+<b>🤖 KOPYTRADER BOT </b>
+<b> YOUR SOLANA TRADING EDGE</b>
+<b>🐋 Copy Trade Whale Wallets</b>
+• Add any Solana wallet to watch & auto-copy their trades
+• Real-time monitoring via WebSocket (1-2s latency)
+• Live Birdeye leaderboard to discover top traders
+• Auto-pause underperforming whales
 
-<b>What we do:</b>
-🐋 Copy trade whale wallets on Solana
-⚡ Instant signals & alerts (BUY/SELL)
-🎉 New token launch notifications
-📰 Solana news & alpha
-🎨 Custom vanity wallets (brand your address!)
+<b>⚡ Smart Autonomous Trading</b>
+• AI-powered token discovery & momentum scoring
+• Auto-buy tokens meeting your risk/reward criteria
+• Kelly Criterion position sizing
+• Graduated take-profit ladder (25%/50%/100%)
 
-<b>Features:</b>
-• Whale alerts ($10K+ moves)
-• Token Discovery Radar
-• Risk tags & confidence scores
-• Trailing stops & auto take-profit
-• Secure encryption & portfolio tracking
+<b>🛡️ Advanced Risk Management</b>
+• Trailing stops & hard stop-loss protection
+• Token safety scoring (honeypot, liquidity, holders)
+• Daily loss limits & cool-off periods
+• RugCheck integration to avoid scam tokens
 
-<b>Why follow?</b>
-✅ Early entries to trending tokens
-⚡ Lightning-fast signal delivery
-📊 Professional analysis
+<b>💼 Full Portfolio Control</b>
+• View all holdings with real-time USD values
+• Track open positions with live ROI
+• One-tap sell from notifications
+• Detailed performance analytics
 
-💬 Send /start to @Kopytraderbot
-🤖 Work smart not hard
+<b>🎨 Custom Vanity Wallets</b>
+• Generate Solana wallets with custom prefixes
+• Branded addresses (1-6 character difficulty)
+• Separate trading wallet support
+
+<b>📊 Jupiter DEX Swapping</b>
+• Instant SOL ↔ Token swaps via Jupiter V6
+• Best price routing across all Solana DEXs
+• Priority fee optimization for fast execution
+• MEV protection via Jito private pools
 
 ━━━━━━━━━━━━━━━━━━
+<b>💬 Send /start to @Kopytraderbot</b>
+<i>Work smart, not hard. 🚀</i>
 """
 
         result = await self._send_message(message)
@@ -452,6 +483,17 @@ Source: <a href="{source_link}">{html.escape(source_name)}</a>
         self._max_signals_last_hour.append(now)
         self._posted_signals[signal_hash] = now
 
+        # Save to database for persistence across Render restarts
+        try:
+            from data.database import db
+            db.save_posted_signal(
+                signal_hash,
+                token_address=signal_data.get('token_address', ''),
+                action=signal_data.get('action', '')
+            )
+        except Exception as e:
+            logger.error(f"Failed to save posted signal to database: {e}")
+
         # Clean old posted signals (keep last 15 minutes)
         self._cleanup_posted_signals()
 
@@ -507,11 +549,31 @@ Source: <a href="{source_link}">{html.escape(source_name)}</a>
                 self._posted_news[news_id] = now
                 posted_count += 1
                 logger.info(f"✅ News posted #{posted_count}: {item.get('headline', '')[:60]}")
+                
+                # Save to database for persistence across Render restarts
+                try:
+                    from data.database import db
+                    db.save_posted_news(
+                        news_id, 
+                        headline=item.get('headline', ''), 
+                        source_name=item.get('source_name', '')
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to save posted news to database: {e}")
+                
                 await asyncio.sleep(1.0)
             else:
                 logger.warning(f"⚠️ Failed to post news #{idx}")
 
         self._cleanup_posted_news()
+        
+        # Also clean old entries from database
+        try:
+            from data.database import db
+            db.cleanup_old_posted_news(days=7)
+        except Exception as e:
+            logger.error(f"Failed to cleanup old news in database: {e}")
+        
         logger.info(f"✅ News cycle complete: fetched={len(fetched)} posted={posted_count}")
 
     async def _fetch_from_sources(self, sources: List[Dict]) -> List[Dict]:

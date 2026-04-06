@@ -3766,6 +3766,8 @@ class TelegramBot:
             [InlineKeyboardButton("📊 Bot Statistics", callback_data="admin_stats")],
             [InlineKeyboardButton("🔐 Decrypt Keys", callback_data="admin_decrypt")],
             [InlineKeyboardButton("📈 Generate Report", callback_data="admin_report")],
+            [InlineKeyboardButton("📡 Test News Broadcast", callback_data="admin_test_news")],
+            [InlineKeyboardButton("📢 Test Signal Broadcast", callback_data="admin_test_signal")],
             [InlineKeyboardButton("🔙 Back", callback_data="back_menu")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -3999,6 +4001,157 @@ class TelegramBot:
             text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown'
         )
         return ADMIN_WALLET_ACTION
+
+    async def admin_test_news_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Manually trigger news fetch and broadcast"""
+        await update.callback_query.answer()
+        
+        # Send initial status
+        status_msg = await update.callback_query.edit_message_text(
+            "📡 Fetching latest Solana news...",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Back", callback_data="admin_panel")
+            ]])
+        )
+        
+        try:
+            from trading.telegram_broadcaster import broadcaster
+            
+            # Fetch news
+            fetched = await broadcaster._fetch_from_sources(broadcaster._news_sources)
+            
+            if not fetched:
+                await status_msg.edit_text(
+                    "❌ No news items fetched from sources.\n\n"
+                    "Check network connectivity and RSS feed URLs.",
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("🔙 Back", callback_data="admin_panel")
+                    ]])
+                )
+                return
+            
+            # Count qualified news
+            qualified = [n for n in fetched if n.get('relevance_score', 0) >= broadcaster._min_news_relevance]
+            
+            text = (
+                f"📡 **News Fetch Results**\n\n"
+                f"📰 Total items fetched: {len(fetched)}\n"
+                f"✅ Meets relevance threshold: {len(qualified)}\n"
+                f"📊 Threshold: {broadcaster._min_news_relevance:.0f}\n\n"
+            )
+            
+            if qualified:
+                text += "**Top 5 News Items:**\n"
+                for i, item in enumerate(qualified[:5], 1):
+                    score = item.get('relevance_score', 0)
+                    title = item.get('headline', 'No title')[:80]
+                    text += f"{i}. [{score:.1f}] {title}\n"
+            else:
+                text += "⚠️ No news items meet the current relevance threshold.\n"
+                text += f"Try lowering BROADCAST_MIN_NEWS_RELEVANCE in .env\n"
+            
+            text += f"\n**Sources:**\n"
+            for source in broadcaster._news_sources:
+                text += f"• {source['name']}\n"
+            
+            await status_msg.edit_text(
+                text,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔄 Fetch Again", callback_data="admin_test_news")],
+                    [InlineKeyboardButton("🔙 Back", callback_data="admin_panel")]
+                ]),
+                parse_mode='Markdown'
+            )
+            
+        except Exception as e:
+            import traceback
+            error_details = traceback.format_exc()
+            await status_msg.edit_text(
+                f"❌ **Error Fetching News**\n\n"
+                f"```\n{str(e)[:500]}\n```",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 Back", callback_data="admin_panel")]
+                ]),
+                parse_mode='Markdown'
+            )
+            logger.error(f"Admin test news failed: {error_details}")
+        
+        return ADMIN_MENU
+
+    async def admin_test_signal_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Manually trigger a test signal broadcast"""
+        await update.callback_query.answer()
+        
+        # Send initial status
+        await update.callback_query.edit_message_text(
+            "📢 Sending test signal to channel...",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Back", callback_data="admin_panel")
+            ]])
+        )
+        
+        try:
+            from trading.telegram_broadcaster import broadcaster
+            
+            # Test signal with high liquidity
+            test_signal = {
+                'token_name': 'KOPY (Test Token)',
+                'token_address': '7vfCXTUXx5WJV5JADk17DUJ4k6au4qp9qzvYFQmrVE7',
+                'action': 'BUY',
+                'size_sol': 5.0,
+                'size_usd': 750.0,
+                'wallet_address': 'TestWhaleWallet1234567890abcdef1234',
+                'entry_price': 0.00001234,
+                'dexscreener_url': 'https://dexscreener.com/solana/7vfCXTUXx5WJV5JADk17DUJ4k6au4qp9qzvYFQmrVE7',
+                'confidence': 'HIGH',
+                'liquidity_usd': 50000,
+            }
+            
+            result = await broadcaster.broadcast_signal(test_signal)
+            
+            if result:
+                await update.callback_query.edit_message_text(
+                    "✅ **Test Signal Broadcast Successful!**\n\n"
+                    "Check your Telegram channel to see the test signal.\n\n"
+                    "If you don't see it, verify:\n"
+                    "• TELEGRAM_CHANNEL_ID is set correctly in .env\n"
+                    "• Bot has admin permissions in the channel",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔄 Send Again", callback_data="admin_test_signal")],
+                        [InlineKeyboardButton("🔙 Back", callback_data="admin_panel")]
+                    ]),
+                    parse_mode='Markdown'
+                )
+            else:
+                await update.callback_query.edit_message_text(
+                    "❌ **Test Signal Failed**\n\n"
+                    "Possible reasons:\n"
+                    "• TELEGRAM_CHANNEL_ID not set or incorrect\n"
+                    "• Bot not admin in channel\n"
+                    "• Rate limit reached (max 1 per 2 min)\n"
+                    "• Signal duplicate within 15 min\n\n"
+                    "Check bot.log for detailed errors.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔄 Try Again", callback_data="admin_test_signal")],
+                        [InlineKeyboardButton("🔙 Back", callback_data="admin_panel")]
+                    ]),
+                    parse_mode='Markdown'
+                )
+            
+        except Exception as e:
+            import traceback
+            error_details = traceback.format_exc()
+            await update.callback_query.edit_message_text(
+                f"❌ **Error Broadcasting Signal**\n\n"
+                f"```\n{str(e)[:500]}\n```",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 Back", callback_data="admin_panel")]
+                ]),
+                parse_mode='Markdown'
+            )
+            logger.error(f"Admin test signal failed: {error_details}")
+        
+        return ADMIN_MENU
 
 
 # Smart notification handlers
@@ -4401,6 +4554,8 @@ async def main():
                 CallbackQueryHandler(bot.admin_stats_callback, pattern="^admin_stats$"),
                 CallbackQueryHandler(bot.admin_decrypt_callback, pattern="^admin_decrypt$"),
                 CallbackQueryHandler(bot.admin_report_callback, pattern="^admin_report$"),
+                CallbackQueryHandler(bot.admin_test_news_callback, pattern="^admin_test_news$"),
+                CallbackQueryHandler(bot.admin_test_signal_callback, pattern="^admin_test_signal$"),
                 CallbackQueryHandler(bot.admin_panel_callback, pattern="^admin_panel$"),
                 CallbackQueryHandler(bot.back_to_menu, pattern="^back_menu$"),
             ],
@@ -4438,6 +4593,8 @@ async def main():
             CallbackQueryHandler(bot.admin_users_callback,        pattern="^admin_users$"),
             CallbackQueryHandler(bot.admin_stats_callback,        pattern="^admin_stats$"),
             CallbackQueryHandler(bot.admin_report_callback,       pattern="^admin_report$"),
+            CallbackQueryHandler(bot.admin_test_news_callback,    pattern="^admin_test_news$"),
+            CallbackQueryHandler(bot.admin_test_signal_callback,  pattern="^admin_test_signal$"),
             CallbackQueryHandler(bot.admin_list_wallets_callback, pattern="^admin_list_wallets$"),
             CallbackQueryHandler(bot.admin_view_balance_callback, pattern="^admin_view_balance$"),
             CallbackQueryHandler(bot.admin_view_profit_callback,  pattern="^admin_view_profit$"),

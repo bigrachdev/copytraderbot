@@ -248,6 +248,34 @@ class Database:
             )
         ''')
 
+        # Posted news (persists across restarts for Render deployments)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS posted_news (
+                id SERIAL PRIMARY KEY,
+                news_id TEXT UNIQUE NOT NULL,
+                headline TEXT,
+                posted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                source_name TEXT
+            )
+        ''')
+
+        # Posted signals (persists across restarts for Render deployments)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS posted_signals (
+                id SERIAL PRIMARY KEY,
+                signal_hash TEXT UNIQUE NOT NULL,
+                token_address TEXT,
+                action TEXT,
+                posted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
+        # Create indexes for performance
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_posted_news_news_id ON posted_news(news_id)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_posted_news_posted_at ON posted_news(posted_at)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_posted_signals_hash ON posted_signals(signal_hash)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_posted_signals_posted_at ON posted_signals(posted_at)')
+
         # Per-user key-value settings
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS user_settings (
@@ -495,6 +523,28 @@ class Database:
                 token_address TEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (user_id, list_type, token_address)
+            )
+        ''')
+
+        # Posted news (persists across restarts for Render deployments)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS posted_news (
+                id INTEGER PRIMARY KEY,
+                news_id TEXT UNIQUE NOT NULL,
+                headline TEXT,
+                posted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                source_name TEXT
+            )
+        ''')
+
+        # Posted signals (persists across restarts for Render deployments)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS posted_signals (
+                id INTEGER PRIMARY KEY,
+                signal_hash TEXT UNIQUE NOT NULL,
+                token_address TEXT,
+                action TEXT,
+                posted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
 
@@ -2241,7 +2291,7 @@ class Database:
 
     def update_pending_trade_token_amount(self, user_identifier: int, token_address: str, amount: float):
         """Update the remaining token amount for an open smart trade.
-        
+
         Args:
             user_identifier: Can be telegram_id or internal user_id
         """
@@ -2249,7 +2299,7 @@ class Database:
             # Convert telegram_id to internal user_id if needed
             user = self.get_user(user_identifier)
             user_id = user['user_id'] if user else user_identifier
-            
+
             conn = self.get_connection()
             if self.use_postgres:
                 conn.execute(
@@ -2265,6 +2315,178 @@ class Database:
             conn.close()
         except Exception as e:
             logger.error(f"update_pending_trade_token_amount error: {e}")
+
+    # =========================================================================
+    # Posted News Persistence (for Render deployments)
+    # =========================================================================
+
+    def get_posted_news_ids(self, hours: int = 48) -> set:
+        """Get all news IDs posted in the last N hours.
+        
+        Args:
+            hours: Lookback window in hours (default 48)
+            
+        Returns:
+            Set of news_id strings that were recently posted
+        """
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            if self.use_postgres:
+                cursor.execute(
+                    'SELECT news_id FROM posted_news WHERE posted_at > NOW() - INTERVAL \'%s hours\'' % hours
+                )
+            else:
+                cursor.execute(
+                    'SELECT news_id FROM posted_news WHERE posted_at > datetime(\'now\', \'-%s hours\')' % hours
+                )
+            results = cursor.fetchall()
+            conn.close()
+            news_ids = {row['news_id'] for row in results}
+            logger.debug(f"Loaded {len(news_ids)} posted news IDs from database (last {hours}h)")
+            return news_ids
+        except Exception as e:
+            logger.error(f"get_posted_news_ids error: {e}")
+            return set()
+
+    def save_posted_news(self, news_id: str, headline: str = '', source_name: str = ''):
+        """Save a posted news ID to database to prevent re-posting after restart.
+        
+        Args:
+            news_id: Unique news identifier
+            headline: News headline (optional)
+            source_name: Source name (optional)
+        """
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            if self.use_postgres:
+                cursor.execute('''
+                    INSERT INTO posted_news (news_id, headline, source_name)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (news_id) DO NOTHING
+                ''', (news_id, headline[:200], source_name[:100]))
+            else:
+                cursor.execute('''
+                    INSERT OR IGNORE INTO posted_news (news_id, headline, source_name)
+                    VALUES (?, ?, ?)
+                ''', (news_id, headline[:200], source_name[:100]))
+            conn.commit()
+            conn.close()
+            logger.debug(f"Saved posted news to database: {news_id[:20]}...")
+        except Exception as e:
+            logger.error(f"save_posted_news error: {e}")
+
+    def cleanup_old_posted_news(self, days: int = 7):
+        """Remove old posted news entries from database.
+        
+        Args:
+            days: Delete news older than this many days
+        """
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            if self.use_postgres:
+                cursor.execute(
+                    "DELETE FROM posted_news WHERE posted_at < NOW() - INTERVAL '%s days'" % days
+                )
+            else:
+                cursor.execute(
+                    "DELETE FROM posted_news WHERE posted_at < datetime('now', '-%s days')" % days
+                )
+            deleted = cursor.rowcount
+            conn.commit()
+            conn.close()
+            if deleted > 0:
+                logger.info(f"Cleaned up {deleted} old posted news entries from database")
+        except Exception as e:
+            logger.error(f"cleanup_old_posted_news error: {e}")
+
+    # =========================================================================
+    # Posted Signals Persistence (for Render deployments)
+    # =========================================================================
+
+    def get_posted_signal_hashes(self, hours: int = 24) -> set:
+        """Get all signal hashes posted in the last N hours.
+        
+        Args:
+            hours: Lookback window in hours (default 24)
+            
+        Returns:
+            Set of signal_hash strings that were recently posted
+        """
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            if self.use_postgres:
+                cursor.execute(
+                    "SELECT signal_hash FROM posted_signals WHERE posted_at > NOW() - INTERVAL '%s hours'" % hours
+                )
+            else:
+                cursor.execute(
+                    "SELECT signal_hash FROM posted_signals WHERE posted_at > datetime('now', '-%s hours')" % hours
+                )
+            results = cursor.fetchall()
+            conn.close()
+            signal_hashes = {row['signal_hash'] for row in results}
+            logger.debug(f"Loaded {len(signal_hashes)} posted signal hashes from database (last {hours}h)")
+            return signal_hashes
+        except Exception as e:
+            logger.error(f"get_posted_signal_hashes error: {e}")
+            return set()
+
+    def save_posted_signal(self, signal_hash: str, token_address: str = '', action: str = ''):
+        """Save a posted signal hash to database to prevent re-posting after restart.
+        
+        Args:
+            signal_hash: Unique signal identifier
+            token_address: Token contract address (optional)
+            action: BUY or SELL (optional)
+        """
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            if self.use_postgres:
+                cursor.execute('''
+                    INSERT INTO posted_signals (signal_hash, token_address, action)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (signal_hash) DO NOTHING
+                ''', (signal_hash, token_address[:50], action[:10]))
+            else:
+                cursor.execute('''
+                    INSERT OR IGNORE INTO posted_signals (signal_hash, token_address, action)
+                    VALUES (?, ?, ?)
+                ''', (signal_hash, token_address[:50], action[:10]))
+            conn.commit()
+            conn.close()
+            logger.debug(f"Saved posted signal to database: {signal_hash[:20]}...")
+        except Exception as e:
+            logger.error(f"save_posted_signal error: {e}")
+
+    def cleanup_old_posted_signals(self, days: int = 7):
+        """Remove old posted signal entries from database.
+        
+        Args:
+            days: Delete signals older than this many days
+        """
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            if self.use_postgres:
+                cursor.execute(
+                    "DELETE FROM posted_signals WHERE posted_at < NOW() - INTERVAL '%s days'" % days
+                )
+            else:
+                cursor.execute(
+                    "DELETE FROM posted_signals WHERE posted_at < datetime('now', '-%s days')" % days
+                )
+            deleted = cursor.rowcount
+            conn.commit()
+            conn.close()
+            if deleted > 0:
+                logger.info(f"Cleaned up {deleted} old posted signal entries from database")
+        except Exception as e:
+            logger.error(f"cleanup_old_posted_signals error: {e}")
 
 
 # Singleton instance
