@@ -20,6 +20,9 @@
 BROADCAST_MIN_NEWS_RELEVANCE=40      # Lower for more news
 BROADCAST_MIN_LIQUIDITY_USD=10000    # Lower for more signals
 BROADCAST_NEWS_INTERVAL_MINUTES=15   # Faster news updates
+BROADCAST_MARKET_UPDATE_INTERVAL_MINUTES=15
+BROADCAST_TOP_TOKEN_COUNT=5
+BROADCAST_TOP_TOKEN_MIN_LIQUIDITY_USD=15000
 ```
 
 ## After Deployment
@@ -43,6 +46,7 @@ BROADCAST_NEWS_INTERVAL_MINUTES=15   # Faster news updates
 
 ### Step 3: Monitor for 1 Hour
 - [ ] News posts appear (every 30 min by default)
+- [ ] Market updates appear (every 30 min by default)
 - [ ] No duplicate news after any restarts
 - [ ] Self-ad appears (on startup + every 4 hours)
 - [ ] Check Render logs periodically for errors

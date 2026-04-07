@@ -1,9 +1,10 @@
 """
 Telegram Broadcasting Module
-Posts trade signals, whale alerts, token launches, news, and self-ads to Telegram channel.
+Posts trade signals, whale alerts, token launches, market updates, news, and self-ads to Telegram channel.
 
 Intervals (configurable via .env):
 - Trade signals/whale alerts/token launches: on-demand (rate-limited)
+- Market updates (SOL + top token performance): every N minutes
 - News posts: every 30 minutes (BROADCAST_NEWS_INTERVAL_MINUTES)
 - Self-advertisement: every 4 hours (BROADCAST_SELF_AD_INTERVAL_HOURS)
 """
@@ -61,8 +62,16 @@ class TelegramBroadcaster:
         import os
         self._min_liquidity_usd = int(os.getenv('BROADCAST_MIN_LIQUIDITY_USD', '30000'))
         self._min_news_relevance = float(os.getenv('BROADCAST_MIN_NEWS_RELEVANCE', '60'))
+        self._market_update_interval = int(os.getenv('BROADCAST_MARKET_UPDATE_INTERVAL_MINUTES', '30')) * 60
+        self._top_token_count = int(os.getenv('BROADCAST_TOP_TOKEN_COUNT', '5'))
+        self._min_top_token_liquidity = float(os.getenv('BROADCAST_TOP_TOKEN_MIN_LIQUIDITY_USD', '25000'))
         
-        logger.info(f"📊 Broadcast thresholds: liquidity=${self._min_liquidity_usd:,}, news relevance={self._min_news_relevance}")
+        logger.info(
+            "📊 Broadcast thresholds: liquidity=$%s, news relevance=%.1f, top token liquidity=$%s",
+            f"{self._min_liquidity_usd:,}",
+            self._min_news_relevance,
+            f"{int(self._min_top_token_liquidity):,}",
+        )
         
         self._news_sources: List[Dict] = [
             {
@@ -144,8 +153,14 @@ class TelegramBroadcaster:
             # Post self-ad on startup
             logger.info("📢 Posting self-advertisement on startup...")
             await self.post_self_ad()
+            await self.post_market_update()
 
             # Start background loops
+            logger.info(
+                "📈 Starting market update loop (interval: %s minutes)",
+                int(self._market_update_interval / 60),
+            )
+            asyncio.create_task(self._market_update_loop())
             logger.info(f"📰 Starting news loop (interval: {BROADCAST_NEWS_INTERVAL_MINUTES} minutes)")
             asyncio.create_task(self._news_loop())
             logger.info(f"📢 Starting self-ad loop (interval: {BROADCAST_SELF_AD_INTERVAL_HOURS} hours)")
@@ -428,6 +443,65 @@ Source: <a href="{source_link}">{html.escape(source_name)}</a>
             logger.info("Self-ad posted to channel")
         return result
 
+    async def post_market_update(self) -> bool:
+        """Post SOL market snapshot with top token performance."""
+        if not self.bot:
+            return False
+
+        try:
+            async with aiohttp.ClientSession(
+                headers={'User-Agent': 'KopytraderBot/1.0 (+https://t.me/Kopytraderbot)'}
+            ) as session:
+                sol_data = await self._fetch_sol_market_data(session)
+                top_tokens = await self._fetch_top_token_performance(session, self._top_token_count)
+
+            if not sol_data and not top_tokens:
+                logger.warning("⚠️ Market update skipped: no SOL data or top token data available")
+                return False
+
+            now_utc = datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
+            sol_lines = []
+            if sol_data:
+                sol_lines = [
+                    f"<b>Price:</b> ${sol_data.get('price_usd', 0):.4f}",
+                    (
+                        f"<b>Change:</b> 1h {self._fmt_pct(sol_data.get('change_1h'))} "
+                        f"| 24h {self._fmt_pct(sol_data.get('change_24h'))}"
+                    ),
+                    f"<b>24h Volume:</b> ${sol_data.get('volume_24h', 0):,.0f}",
+                    f"<b>Liquidity:</b> ${sol_data.get('liquidity_usd', 0):,.0f}",
+                ]
+            else:
+                sol_lines = ["Data unavailable right now."]
+
+            top_lines = []
+            if top_tokens:
+                for idx, token in enumerate(top_tokens, 1):
+                    symbol = self._safe_text(token.get('symbol') or '?')
+                    change_24h = self._fmt_pct(token.get('change_24h'))
+                    vol_24h = token.get('volume_24h', 0.0)
+                    liquidity = token.get('liquidity_usd', 0.0)
+                    top_lines.append(
+                        f"{idx}. <b>{symbol}</b> {change_24h} | Vol ${vol_24h:,.0f} | Liq ${liquidity:,.0f}"
+                    )
+            else:
+                top_lines = ["No qualifying tokens found in this cycle."]
+
+            message = (
+                "<b>📈 SOL MARKET UPDATE</b>\n\n"
+                + "\n".join(sol_lines)
+                + "\n\n"
+                + "<b>🏆 TOP TOKEN PERFORMANCE (24H)</b>\n"
+                + "\n".join(top_lines)
+                + f"\n\n<i>Updated: {now_utc}</i>\n"
+                + "<i>Not financial advice. DYOR.</i>"
+            )
+
+            return await self._send_message(message)
+        except Exception as e:
+            logger.error(f"Market update post failed: {e}")
+            return False
+
     # =========================================================================
     # Background Loops
     # =========================================================================
@@ -448,6 +522,25 @@ Source: <a href="{source_link}">{html.escape(source_name)}</a>
             except Exception as e:
                 logger.error(f"News loop error: {e}")
                 await asyncio.sleep(60)  # Wait before retry
+
+    async def _market_update_loop(self):
+        """Post SOL market + top token performance on a schedule."""
+        if not self.bot:
+            return
+
+        logger.info(
+            "📈 Starting market update loop (every %s minutes)",
+            int(self._market_update_interval / 60),
+        )
+        while True:
+            try:
+                await asyncio.sleep(self._market_update_interval)
+                await self.post_market_update()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Market update loop error: {e}")
+                await asyncio.sleep(60)
 
     async def _self_ad_loop(self):
         """Post self-advertisement every 4 hours (customized from original 24h)."""
@@ -679,6 +772,131 @@ Source: <a href="{source_link}">{html.escape(source_name)}</a>
         logger.info(f"📊 Total unique news items collected: {len(news_items)}")
         return news_items
 
+    async def _fetch_sol_market_data(self, session: aiohttp.ClientSession) -> Optional[Dict]:
+        """Fetch SOL metrics from DexScreener using WSOL token."""
+        try:
+            url = "https://api.dexscreener.com/latest/dex/tokens/So11111111111111111111111111111111111111112"
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                if resp.status != 200:
+                    logger.warning(f"⚠️ SOL market fetch failed: HTTP {resp.status}")
+                    return None
+                payload = await resp.json(content_type=None)
+        except Exception as e:
+            logger.warning(f"⚠️ SOL market fetch error: {e}")
+            return None
+
+        pairs = payload.get('pairs') or []
+        pair = self._pick_best_solana_pair(pairs)
+        if not pair:
+            return None
+
+        return {
+            'price_usd': self._to_float(pair.get('priceUsd')),
+            'change_1h': self._to_float((pair.get('priceChange') or {}).get('h1')),
+            'change_24h': self._to_float((pair.get('priceChange') or {}).get('h24')),
+            'volume_24h': self._to_float((pair.get('volume') or {}).get('h24')),
+            'liquidity_usd': self._to_float((pair.get('liquidity') or {}).get('usd')),
+        }
+
+    async def _fetch_top_token_performance(
+        self,
+        session: aiohttp.ClientSession,
+        limit: int = 5,
+    ) -> List[Dict]:
+        """Fetch top performing Solana tokens by 24h % change from DexScreener boosted feed."""
+        addresses: List[str] = []
+        try:
+            boosted_url = "https://api.dexscreener.com/token-boosts/top/v1"
+            async with session.get(boosted_url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                if resp.status == 200:
+                    payload = await resp.json(content_type=None)
+                    if isinstance(payload, list):
+                        for item in payload:
+                            if str(item.get('chainId', '')).lower() != 'solana':
+                                continue
+                            token_address = str(item.get('tokenAddress', '')).strip()
+                            if token_address and token_address not in addresses:
+                                addresses.append(token_address)
+                            if len(addresses) >= max(12, limit * 3):
+                                break
+        except Exception as e:
+            logger.warning(f"⚠️ Top token boosted fetch failed: {e}")
+
+        if not addresses:
+            return []
+
+        tasks = [
+            self._fetch_token_pair_snapshot(session, address)
+            for address in addresses
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        tokens: List[Dict] = []
+        for r in results:
+            if isinstance(r, Exception) or not r:
+                continue
+            if r['liquidity_usd'] < self._min_top_token_liquidity:
+                continue
+            tokens.append(r)
+
+        tokens.sort(key=lambda t: t.get('change_24h', -99999), reverse=True)
+        return tokens[:max(1, limit)]
+
+    async def _fetch_token_pair_snapshot(
+        self,
+        session: aiohttp.ClientSession,
+        token_address: str,
+    ) -> Optional[Dict]:
+        """Fetch token metrics from DexScreener and select the best Solana pair."""
+        try:
+            url = f"https://api.dexscreener.com/latest/dex/tokens/{token_address}"
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                if resp.status != 200:
+                    return None
+                payload = await resp.json(content_type=None)
+        except Exception:
+            return None
+
+        pair = self._pick_best_solana_pair(payload.get('pairs') or [])
+        if not pair:
+            return None
+
+        base = pair.get('baseToken') or {}
+        change_24h = self._to_float((pair.get('priceChange') or {}).get('h24'))
+        return {
+            'address': token_address,
+            'symbol': base.get('symbol') or '?',
+            'name': base.get('name') or 'Unknown',
+            'change_24h': change_24h,
+            'volume_24h': self._to_float((pair.get('volume') or {}).get('h24')),
+            'liquidity_usd': self._to_float((pair.get('liquidity') or {}).get('usd')),
+        }
+
+    def _pick_best_solana_pair(self, pairs: List[Dict]) -> Optional[Dict]:
+        """Pick the highest-liquidity Solana pair with sane metrics."""
+        sol_pairs = [p for p in pairs if str(p.get('chainId', '')).lower() == 'solana']
+        if not sol_pairs:
+            return None
+
+        def pair_key(p: Dict) -> float:
+            return self._to_float((p.get('liquidity') or {}).get('usd'))
+
+        sol_pairs.sort(key=pair_key, reverse=True)
+        for pair in sol_pairs:
+            if pair_key(pair) > 0:
+                return pair
+        return sol_pairs[0]
+
+    def _to_float(self, value: object) -> float:
+        try:
+            return float(value or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _fmt_pct(self, value: object) -> str:
+        number = self._to_float(value)
+        sign = "+" if number >= 0 else ""
+        return f"{sign}{number:.2f}%"
+
     def _cleanup_posted_news(self):
         """Remove stale posted-news ids (48h window)."""
         cutoff = time.time() - (48 * 3600)
@@ -742,7 +960,7 @@ Source: <a href="{source_link}">{html.escape(source_name)}</a>
             return None
 
         relevance = self._score_news_relevance(title, summary, source_weight)
-        if relevance < 60:
+        if relevance < self._min_news_relevance:
             return None
 
         news_id = hashlib.md5(f"{title}|{link}".encode('utf-8', errors='ignore')).hexdigest()
