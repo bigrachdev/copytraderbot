@@ -15,6 +15,7 @@ import time
 import hashlib
 import re
 import html
+import os
 import xml.etree.ElementTree as ET
 from typing import Dict, Optional, List, Set
 from datetime import datetime
@@ -59,18 +60,32 @@ class TelegramBroadcaster:
         self._max_signals_last_hour: List[float] = []  # timestamps
         
         # Configurable thresholds - can be overridden via environment variables
-        import os
         self._min_liquidity_usd = int(os.getenv('BROADCAST_MIN_LIQUIDITY_USD', '30000'))
         self._min_news_relevance = float(os.getenv('BROADCAST_MIN_NEWS_RELEVANCE', '60'))
         self._market_update_interval = int(os.getenv('BROADCAST_MARKET_UPDATE_INTERVAL_MINUTES', '30')) * 60
         self._top_token_count = int(os.getenv('BROADCAST_TOP_TOKEN_COUNT', '5'))
         self._min_top_token_liquidity = float(os.getenv('BROADCAST_TOP_TOKEN_MIN_LIQUIDITY_USD', '25000'))
+        self._news_max_age_hours = int(os.getenv('BROADCAST_NEWS_MAX_AGE_HOURS', '24'))
+        self._launch_update_interval = int(os.getenv('BROADCAST_LAUNCH_UPDATE_INTERVAL_MINUTES', '20')) * 60
+        self._launch_max_age_minutes = int(os.getenv('BROADCAST_LAUNCH_MAX_AGE_MINUTES', '180'))
+        self._launch_min_liquidity_usd = float(os.getenv('BROADCAST_LAUNCH_MIN_LIQUIDITY_USD', '10000'))
+        self._launch_scan_limit = int(os.getenv('BROADCAST_LAUNCH_SCAN_LIMIT', '15'))
+        self._max_token_keywords = int(os.getenv('BROADCAST_MAX_TOKEN_NEWS_KEYWORDS', '80'))
+        self._posted_launches: Dict[str, float] = {}
+        self._dynamic_token_keywords: Set[str] = set()
+        self._static_sol_token_keywords: Set[str] = {
+            'jupiter', 'jup', 'raydium', 'ray', 'orca', 'bonk', 'wif', 'pyth',
+            'jito', 'jto', 'drift', 'render', 'rndr', 'wen', 'popcat', 'kamino',
+            'meteora', 'tensor', 'hivemapper', 'helium', 'hnt',
+        }
         
         logger.info(
-            "📊 Broadcast thresholds: liquidity=$%s, news relevance=%.1f, top token liquidity=$%s",
+            "📊 Broadcast thresholds: liquidity=$%s, news relevance=%.1f, news max age=%sh, top token liquidity=$%s, launch min liquidity=$%s",
             f"{self._min_liquidity_usd:,}",
             self._min_news_relevance,
+            self._news_max_age_hours,
             f"{int(self._min_top_token_liquidity):,}",
+            f"{int(self._launch_min_liquidity_usd):,}",
         )
         
         self._news_sources: List[Dict] = [
@@ -78,28 +93,35 @@ class TelegramBroadcaster:
                 'name': 'Solana Foundation',
                 'url': 'https://solana.com/news/rss.xml',
                 'weight': 1.30,
+                'type': 'official',
             },
             {
                 'name': 'CoinDesk',
                 'url': 'https://www.coindesk.com/arc/outboundfeeds/rss/?outputType=xml',
                 'weight': 1.15,
+                'type': 'media',
             },
             {
                 'name': 'The Block',
                 'url': 'https://www.theblock.co/rss.xml',
                 'weight': 1.15,
+                'type': 'media',
             },
             {
                 'name': 'Blockworks',
                 'url': 'https://blockworks.co/feed',
                 'weight': 1.10,
+                'type': 'media',
             },
             {
                 'name': 'Decrypt',
                 'url': 'https://decrypt.co/feed',
                 'weight': 1.05,
+                'type': 'media',
             },
         ]
+        self._news_sources.extend(self._load_extra_sources_from_env())
+        logger.info("📰 News sources configured: %s", len(self._news_sources))
 
     @staticmethod
     def _normalize_channel_id(raw_channel_id: Optional[str]) -> Optional[str]:
@@ -161,6 +183,11 @@ class TelegramBroadcaster:
                 int(self._market_update_interval / 60),
             )
             asyncio.create_task(self._market_update_loop())
+            logger.info(
+                "🆕 Starting token launch loop (interval: %s minutes)",
+                int(self._launch_update_interval / 60),
+            )
+            asyncio.create_task(self._launch_update_loop())
             logger.info(f"📰 Starting news loop (interval: {BROADCAST_NEWS_INTERVAL_MINUTES} minutes)")
             asyncio.create_task(self._news_loop())
             logger.info(f"📢 Starting self-ad loop (interval: {BROADCAST_SELF_AD_INTERVAL_HOURS} hours)")
@@ -370,17 +397,23 @@ class TelegramBroadcaster:
         summary = self._clean_text(news_data.get('summary', ''))
         source_link = news_data.get('source_link', '')
         source_name = self._clean_text(news_data.get('source_name', 'Source'))
+        source_type = self._clean_text(news_data.get('source_type', 'media')).upper()
+        published_at = self._clean_text(news_data.get('published_at', ''))
+        published_line = f"Published: {html.escape(published_at)}\n" if published_at else ""
+        brief = summary[:350] + ("..." if len(summary) > 350 else "")
 
         message = f"""
-<b>SOLANA NEWS & ALPHA</b>
+<b>🗞 SOLANA INTEL BRIEF</b>
 
 <b>{html.escape(headline)}</b>
 
-{html.escape(summary)}
+{html.escape(brief)}
 
-Source: <a href="{source_link}">{html.escape(source_name)}</a>
+<b>Source:</b> <a href="{source_link}">{html.escape(source_name)}</a>
+<b>Type:</b> {source_type}
+{published_line}<b>Relevance:</b> {relevance:.1f}/100
 
---------------------
+━━━━━━━━━━━━━━━━━━━━
 <i>Not financial advice. DYOR.</i>
 """
 
@@ -454,6 +487,7 @@ Source: <a href="{source_link}">{html.escape(source_name)}</a>
             ) as session:
                 sol_data = await self._fetch_sol_market_data(session)
                 top_tokens = await self._fetch_top_token_performance(session, self._top_token_count)
+                self._register_dynamic_token_keywords(top_tokens)
 
             if not sol_data and not top_tokens:
                 logger.warning("⚠️ Market update skipped: no SOL data or top token data available")
@@ -558,6 +592,25 @@ Source: <a href="{source_link}">{html.escape(source_name)}</a>
             except Exception as e:
                 logger.error(f"Self-ad loop error: {e}")
                 await asyncio.sleep(60)  # Wait before retry
+
+    async def _launch_update_loop(self):
+        """Fetch and post newly launched Solana tokens on a schedule."""
+        if not self.bot:
+            return
+
+        logger.info(
+            "🆕 Starting launch update loop (every %s minutes)",
+            int(self._launch_update_interval / 60),
+        )
+        while True:
+            try:
+                await self._fetch_and_post_launch_updates()
+                await asyncio.sleep(self._launch_update_interval)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Launch update loop error: {e}")
+                await asyncio.sleep(60)
 
     # =========================================================================
     # Internal Methods
@@ -680,12 +733,27 @@ Source: <a href="{source_link}">{html.escape(source_name)}</a>
         posted_count = 0
         max_posts_per_cycle = 3
 
-        fetched.sort(
-            key=lambda x: (x.get('relevance_score', 0), x.get('published_ts', 0)),
+        fresh_items = [item for item in fetched if self._is_news_recent(item, now)]
+        if not fresh_items:
+            logger.warning(
+                "⚠️ News cycle had items, but none were recent enough (max age %sh)",
+                self._news_max_age_hours,
+            )
+            return
+
+        logger.info(
+            "🕒 News freshness filter: %s/%s items within %sh window",
+            len(fresh_items),
+            len(fetched),
+            self._news_max_age_hours,
+        )
+
+        fresh_items.sort(
+            key=lambda x: (x.get('published_ts', 0), x.get('relevance_score', 0)),
             reverse=True,
         )
 
-        for idx, item in enumerate(fetched, 1):
+        for idx, item in enumerate(fresh_items, 1):
             if posted_count >= max_posts_per_cycle:
                 logger.info(f"⏹️ Max posts per cycle ({max_posts_per_cycle}) reached")
                 break
@@ -734,6 +802,47 @@ Source: <a href="{source_link}">{html.escape(source_name)}</a>
         
         logger.info(f"✅ News cycle complete: fetched={len(fetched)} posted={posted_count}")
 
+    async def _fetch_and_post_launch_updates(self):
+        """Fetch newly launched tokens and post qualified launch alerts."""
+        logger.info("🆕 ====== Starting launch update cycle ======")
+        launches = await self._fetch_new_launch_candidates(limit=self._launch_scan_limit)
+        if not launches:
+            logger.info("🆕 No new launch candidates found this cycle")
+            self._cleanup_posted_launches()
+            return
+        self._register_dynamic_token_keywords(launches)
+
+        now = time.time()
+        posted = 0
+        max_posts_per_cycle = 3
+
+        launches.sort(key=lambda x: x.get('created_ts', 0), reverse=True)
+        for item in launches:
+            if posted >= max_posts_per_cycle:
+                break
+
+            launch_id = item.get('launch_id')
+            if not launch_id:
+                continue
+            if now - self._posted_launches.get(launch_id, 0) < 24 * 3600:
+                continue
+            if float(item.get('liquidity_usd', 0) or 0) < self._launch_min_liquidity_usd:
+                continue
+
+            if await self.broadcast_token_launch(item):
+                self._posted_launches[launch_id] = now
+                posted += 1
+                logger.info(
+                    "✅ Launch posted #%s: %s (%s)",
+                    posted,
+                    item.get('symbol', '?'),
+                    item.get('contract_address', 'n/a')[:12],
+                )
+                await asyncio.sleep(1.0)
+
+        self._cleanup_posted_launches()
+        logger.info("✅ Launch cycle complete: candidates=%s posted=%s", len(launches), posted)
+
     async def _fetch_from_sources(self, sources: List[Dict]) -> List[Dict]:
         """Fetch and parse RSS/Atom news from configured sources."""
         news_items: List[Dict] = []
@@ -745,6 +854,7 @@ Source: <a href="{source_link}">{html.escape(source_name)}</a>
                 source_url = source.get('url')
                 source_name = source.get('name', 'Unknown Source')
                 source_weight = float(source.get('weight', 1.0))
+                source_type = str(source.get('type', 'media') or 'media')
                 if not source_url:
                     logger.warning(f"⚠️ Source {source_name} has no URL, skipping")
                     continue
@@ -757,7 +867,7 @@ Source: <a href="{source_link}">{html.escape(source_name)}</a>
                             continue
                         body = await resp.text()
                         logger.debug(f"📄 {source_name}: Received {len(body)} bytes")
-                        parsed = self._parse_feed_items(body, source_name, source_weight)
+                        parsed = self._parse_feed_items(body, source_name, source_weight, source_type)
                         logger.info(f"✅ {source_name}: parsed {len(parsed)} items")
                         for item in parsed:
                             news_id = item.get('news_id')
@@ -841,6 +951,90 @@ Source: <a href="{source_link}">{html.escape(source_name)}</a>
         tokens.sort(key=lambda t: t.get('change_24h', -99999), reverse=True)
         return tokens[:max(1, limit)]
 
+    async def _fetch_new_launch_candidates(self, limit: int = 15) -> List[Dict]:
+        """Fetch newly created Solana tokens from DexScreener profiles and enrich with pair stats."""
+        addresses: List[str] = []
+        headers = {'User-Agent': 'KopytraderBot/1.0 (+https://t.me/Kopytraderbot)'}
+        try:
+            async with aiohttp.ClientSession(headers=headers) as session:
+                profiles_url = "https://api.dexscreener.com/token-profiles/latest/v1"
+                async with session.get(profiles_url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                    if resp.status != 200:
+                        logger.warning(f"⚠️ Launch profiles fetch failed: HTTP {resp.status}")
+                        return []
+                    payload = await resp.json(content_type=None)
+
+                if not isinstance(payload, list):
+                    return []
+
+                for entry in payload:
+                    if str(entry.get('chainId', '')).lower() != 'solana':
+                        continue
+                    addr = str(entry.get('tokenAddress', '')).strip()
+                    if addr and addr not in addresses:
+                        addresses.append(addr)
+                    if len(addresses) >= max(limit * 2, 10):
+                        break
+
+                tasks = [self._fetch_token_launch_snapshot(session, address) for address in addresses]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                items = []
+                for r in results:
+                    if isinstance(r, Exception) or not r:
+                        continue
+                    age_minutes = float(r.get('age_minutes', 999999) or 999999)
+                    if age_minutes > self._launch_max_age_minutes:
+                        continue
+                    items.append(r)
+                return items
+        except Exception as e:
+            logger.warning(f"⚠️ Launch candidate fetch error: {e}")
+            return []
+
+    async def _fetch_token_launch_snapshot(
+        self,
+        session: aiohttp.ClientSession,
+        token_address: str,
+    ) -> Optional[Dict]:
+        """Fetch launch details for one token and normalize for token-launch broadcast."""
+        try:
+            url = f"https://api.dexscreener.com/latest/dex/tokens/{token_address}"
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                if resp.status != 200:
+                    return None
+                payload = await resp.json(content_type=None)
+        except Exception:
+            return None
+
+        pair = self._pick_best_solana_pair(payload.get('pairs') or [])
+        if not pair:
+            return None
+
+        created_ts = self._pair_created_ts(pair)
+        if created_ts <= 0:
+            return None
+
+        now = time.time()
+        age_minutes = max(0.0, (now - created_ts) / 60.0)
+        base = pair.get('baseToken') or {}
+        liquidity = self._to_float((pair.get('liquidity') or {}).get('usd'))
+        dex_id = str(pair.get('dexId', '')).lower()
+        platform = 'pump.fun' if 'pump' in dex_id else (pair.get('dexId') or 'DEX')
+        risk_label = self._classify_launch_risk(liquidity)
+
+        return {
+            'launch_id': hashlib.md5(f"launch|{token_address}".encode('utf-8')).hexdigest(),
+            'token_name': base.get('name') or 'Unknown Token',
+            'symbol': base.get('symbol') or '?',
+            'contract_address': token_address,
+            'platform': platform,
+            'liquidity_usd': liquidity,
+            'age_minutes': age_minutes,
+            'risk_label': risk_label,
+            'dexscreener_url': pair.get('url') or f"https://dexscreener.com/solana/{token_address}",
+            'created_ts': created_ts,
+        }
+
     async def _fetch_token_pair_snapshot(
         self,
         session: aiohttp.ClientSession,
@@ -886,6 +1080,25 @@ Source: <a href="{source_link}">{html.escape(source_name)}</a>
                 return pair
         return sol_pairs[0]
 
+    def _pair_created_ts(self, pair: Dict) -> float:
+        """Return pair creation timestamp in seconds."""
+        raw = pair.get('pairCreatedAt')
+        value = self._to_float(raw)
+        if value <= 0:
+            return 0.0
+        # DexScreener commonly returns milliseconds.
+        if value > 10_000_000_000:
+            return value / 1000.0
+        return value
+
+    def _classify_launch_risk(self, liquidity_usd: float) -> str:
+        """Simple risk label for launch alerts."""
+        if liquidity_usd < 5000:
+            return 'RUG_RISK'
+        if liquidity_usd >= 50000:
+            return 'OKAY'
+        return 'DEGEN'
+
     def _to_float(self, value: object) -> float:
         try:
             return float(value or 0)
@@ -897,6 +1110,16 @@ Source: <a href="{source_link}">{html.escape(source_name)}</a>
         sign = "+" if number >= 0 else ""
         return f"{sign}{number:.2f}%"
 
+    def _is_news_recent(self, item: Dict, now_ts: float) -> bool:
+        """Accept only news with a valid timestamp inside freshness window."""
+        published_ts = self._to_float(item.get('published_ts'))
+        if published_ts <= 0:
+            return False
+        max_age_seconds = max(1, self._news_max_age_hours) * 3600
+        if published_ts > now_ts + 6 * 3600:
+            return False
+        return (now_ts - published_ts) <= max_age_seconds
+
     def _cleanup_posted_news(self):
         """Remove stale posted-news ids (48h window)."""
         cutoff = time.time() - (48 * 3600)
@@ -905,7 +1128,21 @@ Source: <a href="{source_link}">{html.escape(source_name)}</a>
             if ts >= cutoff
         }
 
-    def _parse_feed_items(self, xml_text: str, source_name: str, source_weight: float) -> List[Dict]:
+    def _cleanup_posted_launches(self):
+        """Remove stale launch ids (48h window)."""
+        cutoff = time.time() - (48 * 3600)
+        self._posted_launches = {
+            launch_id: ts for launch_id, ts in self._posted_launches.items()
+            if ts >= cutoff
+        }
+
+    def _parse_feed_items(
+        self,
+        xml_text: str,
+        source_name: str,
+        source_weight: float,
+        source_type: str = 'media',
+    ) -> List[Dict]:
         """Parse RSS/Atom XML into normalized news items."""
         items: List[Dict] = []
         try:
@@ -921,7 +1158,7 @@ Source: <a href="{source_link}">{html.escape(source_name)}</a>
             )
             published = self._xml_text(entry.find('pubDate'))
             normalized = self._build_news_item(
-                title, summary, link, source_name, source_weight, published
+                title, summary, link, source_name, source_weight, published, source_type
             )
             if normalized:
                 items.append(normalized)
@@ -940,7 +1177,7 @@ Source: <a href="{source_link}">{html.escape(source_name)}</a>
                 or self._xml_text(entry.find(f'{atom_ns}published'))
             )
             normalized = self._build_news_item(
-                title, summary, link, source_name, source_weight, published
+                title, summary, link, source_name, source_weight, published, source_type
             )
             if normalized:
                 items.append(normalized)
@@ -955,6 +1192,7 @@ Source: <a href="{source_link}">{html.escape(source_name)}</a>
         source_name: str,
         source_weight: float,
         published_raw: str,
+        source_type: str = 'media',
     ) -> Optional[Dict]:
         if not title or not link:
             return None
@@ -969,18 +1207,69 @@ Source: <a href="{source_link}">{html.escape(source_name)}</a>
             'summary': summary[:500],
             'source_link': link,
             'source_name': source_name,
+            'source_type': source_type,
             'relevance_score': relevance,
             'published_at': published_raw or '',
             'published_ts': self._parse_timestamp(published_raw),
             'news_id': news_id,
         }
 
+    def _load_extra_sources_from_env(self) -> List[Dict]:
+        """
+        Load extra news sources from env:
+        - BROADCAST_EXTRA_NEWS_SOURCES
+        - BROADCAST_SOCIAL_NEWS_SOURCES
+        Format:
+            "Name|https://url|1.1;Another Source|https://url2|1.0"
+        """
+        sources: List[Dict] = []
+        sources.extend(self._parse_source_list_env('BROADCAST_EXTRA_NEWS_SOURCES', default_type='media'))
+        sources.extend(self._parse_source_list_env('BROADCAST_SOCIAL_NEWS_SOURCES', default_type='social'))
+        return sources
+
+    def _parse_source_list_env(self, env_key: str, default_type: str) -> List[Dict]:
+        raw = os.getenv(env_key, '').strip()
+        if not raw:
+            return []
+
+        parsed_sources: List[Dict] = []
+        chunks = [c.strip() for c in raw.split(';') if c.strip()]
+        for chunk in chunks:
+            parts = [p.strip() for p in chunk.split('|')]
+            if len(parts) < 2:
+                logger.warning("⚠️ Invalid source format in %s: %s", env_key, chunk)
+                continue
+
+            name = parts[0]
+            url = parts[1]
+            weight = 1.0
+            if len(parts) >= 3:
+                try:
+                    weight = float(parts[2])
+                except ValueError:
+                    logger.warning("⚠️ Invalid weight in %s source %s; defaulting to 1.0", env_key, name)
+                    weight = 1.0
+
+            clean_url = self._clean_link(url)
+            if not clean_url:
+                logger.warning("⚠️ Invalid URL in %s source %s: %s", env_key, name, url)
+                continue
+
+            parsed_sources.append({
+                'name': name,
+                'url': clean_url,
+                'weight': weight,
+                'type': default_type,
+            })
+        logger.info("📰 Loaded %s extra %s news source(s) from %s", len(parsed_sources), default_type, env_key)
+        return parsed_sources
+
     def _score_news_relevance(self, title: str, summary: str, source_weight: float = 1.0) -> float:
         """Simple Solana relevance scoring for news ranking."""
         text = f"{title} {summary}".lower()
         score = 0.0
 
-        if any(k in text for k in ['solana', 'sol ', '$sol', 'sol/']):
+        if any(k in text for k in ['solana', 'sol ', '$sol', 'sol/', 'spl', 'on solana', 'solana-based', 'sol ecosystem']):
             score += 45
 
         ecosystem_keywords = [
@@ -1000,8 +1289,47 @@ Source: <a href="{source_link}">{html.escape(source_name)}</a>
         if 'opinion' in text or 'sponsored' in text:
             score -= 15
 
+        token_hits = self._count_token_keyword_hits(text)
+        if token_hits:
+            score += min(36, token_hits * 9)
+            if any(k in text for k in ['solana', 'on solana', 'spl', 'solana-based']):
+                score += 10
+
         score += (source_weight - 1.0) * 20
         return max(0.0, min(100.0, round(score, 2)))
+
+    def _count_token_keyword_hits(self, text: str) -> int:
+        """Count unique Solana-token keyword hits in text."""
+        keywords = self._all_token_keywords()
+        hits = 0
+        for kw in keywords:
+            if not kw:
+                continue
+            # For symbols/words use a word boundary to avoid many false positives.
+            if re.search(rf'\b{re.escape(kw)}\b', text):
+                hits += 1
+        return hits
+
+    def _all_token_keywords(self) -> Set[str]:
+        """Combined token keywords used for token-specific Solana news detection."""
+        return self._static_sol_token_keywords | self._dynamic_token_keywords
+
+    def _register_dynamic_token_keywords(self, token_items: List[Dict]):
+        """Add symbols/names from live token feeds so their news qualifies as Solana updates."""
+        if not token_items:
+            return
+        for token in token_items:
+            symbol = str(token.get('symbol') or '').strip().lower()
+            name = str(token.get('name') or token.get('token_name') or '').strip().lower()
+            if symbol and 2 <= len(symbol) <= 12 and symbol.isascii():
+                self._dynamic_token_keywords.add(symbol)
+            if name:
+                for word in re.findall(r'[a-z0-9]{3,20}', name):
+                    self._dynamic_token_keywords.add(word)
+
+        if len(self._dynamic_token_keywords) > self._max_token_keywords:
+            sorted_keys = sorted(self._dynamic_token_keywords)
+            self._dynamic_token_keywords = set(sorted_keys[-self._max_token_keywords:])
 
     def _parse_timestamp(self, value: str) -> float:
         if not value:

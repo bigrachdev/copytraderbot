@@ -20,9 +20,19 @@
 BROADCAST_MIN_NEWS_RELEVANCE=40      # Lower for more news
 BROADCAST_MIN_LIQUIDITY_USD=10000    # Lower for more signals
 BROADCAST_NEWS_INTERVAL_MINUTES=15   # Faster news updates
+BROADCAST_NEWS_MAX_AGE_HOURS=12      # Keep news fresh
 BROADCAST_MARKET_UPDATE_INTERVAL_MINUTES=15
 BROADCAST_TOP_TOKEN_COUNT=5
 BROADCAST_TOP_TOKEN_MIN_LIQUIDITY_USD=15000
+BROADCAST_LAUNCH_UPDATE_INTERVAL_MINUTES=10
+BROADCAST_LAUNCH_MAX_AGE_MINUTES=120
+BROADCAST_LAUNCH_MIN_LIQUIDITY_USD=5000
+BROADCAST_LAUNCH_SCAN_LIMIT=20
+BROADCAST_MAX_TOKEN_NEWS_KEYWORDS=120
+# Optional extra media feeds (Name|URL|Weight;...)
+BROADCAST_EXTRA_NEWS_SOURCES=SolanaFloor|https://solanafloor.com/news/feed|1.1
+# Optional social/Twitter relay feeds (Name|URL|Weight;...)
+BROADCAST_SOCIAL_NEWS_SOURCES=SolanaStatusX|https://example-rss-relay/solanastatus|1.0
 ```
 
 ## After Deployment
@@ -46,7 +56,9 @@ BROADCAST_TOP_TOKEN_MIN_LIQUIDITY_USD=15000
 
 ### Step 3: Monitor for 1 Hour
 - [ ] News posts appear (every 30 min by default)
+- [ ] News is recent only (within max age window)
 - [ ] Market updates appear (every 30 min by default)
+- [ ] New token launch updates appear (every 20 min by default)
 - [ ] No duplicate news after any restarts
 - [ ] Self-ad appears (on startup + every 4 hours)
 - [ ] Check Render logs periodically for errors
