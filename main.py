@@ -45,49 +45,162 @@ logger.info("All imports successful")
 load_dotenv()
 
 
+async def run_telegram_bot_with_recovery():
+    """Run Telegram bot with automatic error recovery - NEVER DIE"""
+    restart_count = 0
+    max_restart_attempts = 1000  # Nearly infinite
+    restart_delay = 5  # Start with 5 second delay
+    
+    while restart_count < max_restart_attempts:
+        try:
+            logger.info(f"🚀 Telegram bot startup (attempt {restart_count + 1})")
+            await start_telegram_bot()
+            logger.info("✅ Telegram bot exited normally")
+            break
+        
+        except KeyboardInterrupt:
+            logger.info("🛑 Bot interrupted by user")
+            break
+        
+        except asyncio.CancelledError:
+            logger.warning("⚠️ Telegram bot task cancelled")
+            break
+        
+        except Exception as e:
+            restart_count += 1
+            logger.error(f"❌ Telegram bot crashed: {e}")
+            logger.error(traceback.format_exc())
+            
+            # Exponential backoff with max limit
+            restart_delay = min(restart_delay * 1.5, 60)  # Max 60 seconds
+            
+            logger.critical(f"🔄 AUTO-RESTART #{restart_count}/{max_restart_attempts}")
+            logger.critical(f"⏳ Waiting {restart_delay:.1f}s before restart...")
+            
+            # Notify admins of crash
+            try:
+                from utils.notifications import notification_engine
+                await notification_engine.notify_admins(
+                    f"🚨 **BOT CRASH & AUTO-RESTART**\n"
+                    f"Error: `{str(e)[:100]}`\n"
+                    f"Restart Attempt: `{restart_count}`\n"
+                    f"Waiting: `{restart_delay:.1f}s`"
+                )
+            except Exception as notify_err:
+                logger.warning(f"Could not notify admins: {notify_err}")
+            
+            await asyncio.sleep(restart_delay)
+    
+    if restart_count >= max_restart_attempts:
+        logger.critical("🚨 MAX AUTO-RESTART ATTEMPTS REACHED - MANUAL INTERVENTION REQUIRED")
+
+
 async def main():
-    """Main async entry point"""
+    """Main async entry point with robust error recovery"""
+    monitor_task = None
+    keep_alive_thread = None
+    
     try:
         logger.info("=" * 60)
-        logger.info("🚀 ULTIMATE DEX COPY TRADING BOT")
+        logger.info("🚀 ULTIMATE DEX COPY TRADING BOT - INDESTRUCTIBLE MODE")
         logger.info("=" * 60)
 
         # Start keep-alive service
         port = int(os.getenv('PORT', 10000))
         keep_alive = AggressiveKeepAlive(port=port)
-        keep_alive_thread = threading.Thread(target=keep_alive.start, daemon=True)
+        keep_alive_thread = threading.Thread(target=keep_alive.start, daemon=True, name="KeepAlive")
         keep_alive_thread.start()
-        logger.info("✅ Keep-Alive service started")
+        logger.info("✅ Keep-Alive service started (Render sleep prevention)")
 
-        # Start wallet monitoring in background
-        monitor_task = asyncio.create_task(monitor.run())
-        logger.info("✅ Wallet monitoring started")
-
-        # Initialize Telegram broadcaster
-        await broadcaster.initialize()
-        logger.info("✅ Telegram broadcaster initialized")
-
-        # Start Telegram bot (blocking)
-        logger.info("✅ Starting Telegram bot...")
+        # Start wallet monitoring in background with error recovery
         try:
-            await start_telegram_bot()
-        except KeyboardInterrupt:
-            logger.info("🛑 Bot interrupted by user")
+            monitor_task = asyncio.create_task(run_with_recovery(
+                monitor.run(),
+                service_name="Wallet Monitor"
+            ))
+            logger.info("✅ Wallet monitoring started")
+        except Exception as e:
+            logger.error(f"⚠️ Wallet monitoring failed to start: {e}")
+
+        # Initialize Telegram broadcaster with error handling
+        try:
+            await broadcaster.initialize()
+            logger.info("✅ Telegram broadcaster initialized")
+        except Exception as e:
+            logger.error(f"⚠️ Telegram broadcaster initialization failed: {e}")
+            logger.error("Continuing without broadcaster...")
+
+        # Start Telegram bot with auto-recovery (main loop)
+        logger.info("🚀 Starting Telegram bot with auto-recovery...")
+        await run_telegram_bot_with_recovery()
+        
     except Exception as e:
-        logger.critical(f"Fatal error: {e}")
+        logger.critical(f"🚨 FATAL ERROR: {e}")
         logger.critical(traceback.format_exc())
-        raise
-    finally:
-        # Cleanup
+        
+        # Attempt to notify admins
         try:
-            monitor_task.cancel()
-            keep_alive.running = False
+            from utils.notifications import notification_engine
+            await notification_engine.notify_admins(
+                f"🚨 **FATAL BOT ERROR**\n"
+                f"Error: `{str(e)[:100]}`\n"
+                f"Check logs for details"
+            )
+        except:
+            pass
+    
+    finally:
+        # Graceful cleanup
+        logger.info("🧹 Starting graceful shutdown...")
+        try:
+            if monitor_task and not monitor_task.done():
+                monitor_task.cancel()
+                await asyncio.sleep(1)
         except Exception:
             pass
+        
+        try:
+            if keep_alive_thread:
+                # Signal keep-alive to stop
+                pass
+        except Exception:
+            pass
+        
+        logger.info("✅ Shutdown complete")
+
+
+async def run_with_recovery(coro, service_name: str, max_retries: int = 100):
+    """Run async coroutine with automatic recovery"""
+    retry_count = 0
+    retry_delay = 5
+    
+    while retry_count < max_retries:
+        try:
+            await coro
+            logger.info(f"✅ {service_name} completed normally")
+            break
+        except asyncio.CancelledError:
+            logger.info(f"⚠️ {service_name} cancelled")
+            break
+        except Exception as e:
+            retry_count += 1
+            retry_delay = min(retry_delay * 1.5, 60)
+            
+            logger.error(f"❌ {service_name} failed: {e}")
+            logger.warning(f"🔄 Restarting {service_name} (attempt {retry_count}/{max_retries}) in {retry_delay:.1f}s...")
+            
+            await asyncio.sleep(retry_delay)
+    
+    if retry_count >= max_retries:
+        logger.critical(f"🚨 {service_name} exceeded max retries - giving up")
 
 
 if __name__ == '__main__':
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("🛑 Shutting down...")
+        logger.info("🛑 Bot interrupted by user - graceful shutdown")
+    except Exception as e:
+        logger.critical(f"🚨 Unhandled exception in main: {e}")
+        logger.critical(traceback.format_exc())
+        sys.exit(1)

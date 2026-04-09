@@ -219,6 +219,50 @@ TOKEN_RISK_CAUTION    = float(os.getenv('TOKEN_RISK_CAUTION',    '50'))
 TOKEN_RISK_HIGH       = float(os.getenv('TOKEN_RISK_HIGH',       '65'))
 TOKEN_RISK_VERY_HIGH  = float(os.getenv('TOKEN_RISK_VERY_HIGH',  '80'))
 
+# ── RATE LIMITING & CACHING (NEW) ────────────────────────────────────────────
+# Keep-Alive Configuration (Render sleep prevention)
+KEEP_ALIVE_PING_INTERVAL     = int(os.getenv('KEEP_ALIVE_PING_INTERVAL', '120'))     # Ping every 2 minutes
+KEEP_ALIVE_HEARTBEAT_INTERVAL= int(os.getenv('KEEP_ALIVE_HEARTBEAT_INTERVAL', '180'))# Heartbeat every 3 minutes
+RENDER_EXTERNAL_URL          = os.getenv('RENDER_EXTERNAL_URL', '')                  # Must be set in Render dashboard
+
+# External Monitoring URLs (for extra protection against sleep)
+UPTIMEROBOT_URLS             = os.getenv('UPTIMEROBOT_URLS', '')                     # Comma-separated URLs
+CRON_JOB_URLS                = os.getenv('CRON_JOB_URLS', '')                        # Comma-separated URLs
+BETTERUPTIME_URLS            = os.getenv('BETTERUPTIME_URLS', '')                    # Comma-separated URLs
+CUSTOM_WEBHOOKS              = os.getenv('CUSTOM_WEBHOOKS', '')                      # Comma-separated URLs
+
+# Rate Limit & Cache Configuration
+API_CACHE_ENABLED            = os.getenv('API_CACHE_ENABLED', 'true').lower() == 'true'    # Enable/disable caching
+API_CACHE_DEFAULT_TTL        = int(os.getenv('API_CACHE_DEFAULT_TTL', '300'))              # Default cache 5 minutes
+API_MAX_CONCURRENT_REQUESTS  = int(os.getenv('API_MAX_CONCURRENT_REQUESTS', '10'))         # Semaphore limit
+API_REQUEST_TIMEOUT          = int(os.getenv('API_REQUEST_TIMEOUT', '15'))                 # Request timeout (seconds)
+API_MAX_RETRIES              = int(os.getenv('API_MAX_RETRIES', '5'))                      # Retry attempts
+
+# Per-API Cache TTLs (override defaults)
+TOKEN_ANALYZER_CACHE_TTL     = int(os.getenv('TOKEN_ANALYZER_CACHE_TTL', '300'))    # 5 minutes
+DEX_SCREENER_CACHE_TTL       = int(os.getenv('DEX_SCREENER_CACHE_TTL', '120'))      # 2 minutes (fresh data)
+BIRDEYE_CACHE_TTL            = int(os.getenv('BIRDEYE_CACHE_TTL', '180'))          # 3 minutes
+SOLSCAN_CACHE_TTL            = int(os.getenv('SOLSCAN_CACHE_TTL', '300'))          # 5 minutes
+JUPITER_CACHE_TTL            = int(os.getenv('JUPITER_CACHE_TTL', '60'))           # 1 minute (price sensitive)
+
+# Exponential Backoff Configuration
+API_BACKOFF_INITIAL_DELAY    = int(os.getenv('API_BACKOFF_INITIAL_DELAY', '1'))    # Start with 1 second
+API_BACKOFF_MAX_DELAY        = int(os.getenv('API_BACKOFF_MAX_DELAY', '300'))      # Max 5 minutes backoff
+API_BACKOFF_MULTIPLIER       = float(os.getenv('API_BACKOFF_MULTIPLIER', '2.0'))   # 2x backoff each retry
+
+# Rate Limit Detection & Cooldown
+API_RATE_LIMIT_COOLDOWN      = int(os.getenv('API_RATE_LIMIT_COOLDOWN', '60'))     # Cooldown on 429 errors (seconds)
+API_DETECT_429               = os.getenv('API_DETECT_429', 'true').lower() == 'true'     # Detect HTTP 429
+API_DETECT_RATE_KEYWORDS     = os.getenv('API_DETECT_RATE_KEYWORDS', 'true').lower() == 'true'  # Detect "rate limit" in errors
+
+# Intelligent Data Fetcher Settings
+DATA_FETCHER_CACHE_STATS     = os.getenv('DATA_FETCHER_CACHE_STATS', 'true').lower() == 'true'  # Log cache stats
+DATA_FETCHER_CLEANUP_INTERVAL= int(os.getenv('DATA_FETCHER_CLEANUP_INTERVAL', '3600'))          # Cleanup every 1 hour
+
+# Logging
+LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
+LOG_RATE_LIMIT_HITS = os.getenv('LOG_RATE_LIMIT_HITS', 'true').lower() == 'true'  # Log rate limit detection
+
 # ── Notifications ─────────────────────────────────────────────────────────────
 NOTIFICATION_CHECK_INTERVAL  = int(os.getenv('NOTIFICATION_CHECK_INTERVAL',   '60'))
 NOTIFICATION_CUTLOSS_THRESHOLD = float(os.getenv('NOTIFICATION_CUTLOSS_THRESHOLD', '-50'))
