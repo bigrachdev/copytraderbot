@@ -269,6 +269,7 @@ class TelegramBroadcaster:
 
 ━━━━━━━━━━━━━━━━━━
 <i>Not financial advice. DYOR.</i>
+<a href="https://t.me/Kopytraderbot">Bad a sol trading @Kopytraderbot got you covered win rate is 87%</a>
 """
 
         return await self._send_message(message)
@@ -317,6 +318,7 @@ class TelegramBroadcaster:
 
 ━━━━━━━━━━━━━━━━━━
 <i>Not financial advice. DYOR.</i>
+<a href="https://t.me/Kopytraderbot">Bad a sol trading @Kopytraderbot got you covered win rate is 87%</a>
 """
 
         return await self._send_message(message)
@@ -365,7 +367,7 @@ class TelegramBroadcaster:
 <b>DexScreener:</b> {dexscreener_url}
 
 ━━━━━━━━━━━━━━━━━━
-<i>Not financial advice. DYOR.</i>
+<i>.</i>
 """
 
         return await self._send_message(message)
@@ -415,6 +417,7 @@ class TelegramBroadcaster:
 
 ━━━━━━━━━━━━━━━━━━━━
 <i>Not financial advice. DYOR.</i>
+<a href="https://t.me/Kopytraderbot">Bad a sol trading @Kopytraderbot got you covered win rate is 87%</a>
 """
 
         return await self._send_message(message)
@@ -528,7 +531,7 @@ class TelegramBroadcaster:
                 + "<b>🏆 TOP TOKEN PERFORMANCE (24H)</b>\n"
                 + "\n".join(top_lines)
                 + f"\n\n<i>Updated: {now_utc}</i>\n"
-                + "<i>Not financial advice. DYOR.</i>"
+                + "<a href=\"https://t.me/Kopytraderbot\">Bad a sol trading @Kopytraderbot got you covered win rate is 87%</a>"
             )
 
             return await self._send_message(message)
