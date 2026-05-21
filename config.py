@@ -276,6 +276,69 @@ NOTIFICATION_PROFIT_MILESTONES = [
 # ── Logging ───────────────────────────────────────────────────────────────────
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# ═ IMPROVEMENTS: SPEED, WHALE FILTERING, EXIT STRATEGY, RESILIENCE, GRID TRADING
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ── SPEED OPTIMIZATION: WebSocket & Mempool Monitoring ────────────────────────
+ENABLE_MEMPOOL_MONITORING       = os.getenv('ENABLE_MEMPOOL_MONITORING', 'true').lower() == 'true'
+ENABLE_FAST_SIGNATURE_CACHE     = os.getenv('ENABLE_FAST_SIGNATURE_CACHE', 'true').lower() == 'true'
+LATENCY_OPTIMIZATION_LEVEL      = int(os.getenv('LATENCY_OPTIMIZATION_LEVEL', '2'))  # 1-3: low, medium, high
+WS_COMMITMENT_LEVEL             = os.getenv('WS_COMMITMENT_LEVEL', 'processed')      # 'processed', 'confirmed', 'finalized'
+MEMPOOL_CHECK_INTERVAL_MS       = int(os.getenv('MEMPOOL_CHECK_INTERVAL_MS', '100')) # Check mempool every 100ms
+SIG_CACHE_MAX_AGE_SECONDS       = int(os.getenv('SIG_CACHE_MAX_AGE_SECONDS', '300')) # Prune sigs older than 5 min
+ENABLE_PARALLEL_WS_SUBSCRIPTIONS = os.getenv('ENABLE_PARALLEL_WS_SUBSCRIPTIONS', 'true').lower() == 'true'
+
+# ── WHALE FILTERING: Advanced Scoring Algorithm ───────────────────────────────
+ENABLE_ADVANCED_WHALE_SCORING   = os.getenv('ENABLE_ADVANCED_WHALE_SCORING', 'true').lower() == 'true'
+WHALE_SCORE_WIN_RATE_WEIGHT     = float(os.getenv('WHALE_SCORE_WIN_RATE_WEIGHT', '0.30'))        # 30%
+WHALE_SCORE_PROFIT_WEIGHT       = float(os.getenv('WHALE_SCORE_PROFIT_WEIGHT', '0.20'))        # 20%
+WHALE_SCORE_DRAWDOWN_WEIGHT     = float(os.getenv('WHALE_SCORE_DRAWDOWN_WEIGHT', '0.25'))      # 25%
+WHALE_SCORE_RECENCY_WEIGHT      = float(os.getenv('WHALE_SCORE_RECENCY_WEIGHT', '0.15'))       # 15%
+WHALE_SCORE_CONSISTENCY_WEIGHT  = float(os.getenv('WHALE_SCORE_CONSISTENCY_WEIGHT', '0.10'))   # 10%
+WHALE_MAX_CONSECUTIVE_LOSSES    = int(os.getenv('WHALE_MAX_CONSECUTIVE_LOSSES', '5'))          # Pause if 5+ losses
+WHALE_CONSISTENCY_LOOKBACK_DAYS = int(os.getenv('WHALE_CONSISTENCY_LOOKBACK_DAYS', '14'))      # 2-week consistency check
+WHALE_SCORE_THRESHOLD_TO_TRADE  = float(os.getenv('WHALE_SCORE_THRESHOLD_TO_TRADE', '50.0'))   # Min score to copy
+
+# ── EXIT STRATEGY: Volatility-Adjusted TP & Dynamic Trailing Stops ────────────
+ENABLE_VOLATILITY_ADJUSTED_TP   = os.getenv('ENABLE_VOLATILITY_ADJUSTED_TP', 'true').lower() == 'true'
+ENABLE_DYNAMIC_TRAILING_STOP    = os.getenv('ENABLE_DYNAMIC_TRAILING_STOP', 'true').lower() == 'true'
+ENABLE_BREAKEVEN_STOP           = os.getenv('ENABLE_BREAKEVEN_STOP', 'true').lower() == 'true'
+TP_VOLATILITY_LOW               = os.getenv('TP_VOLATILITY_LOW', '0.30,0.60,1.00')   # Stable tokens
+TP_VOLATILITY_MID               = os.getenv('TP_VOLATILITY_MID', '0.50,1.00,2.00')   # Medium volatility
+TP_VOLATILITY_HIGH              = os.getenv('TP_VOLATILITY_HIGH', '0.75,1.50,3.00')  # Shitcoins/pump.fun
+TP_VOLATILITY_THRESHOLD_LOW     = float(os.getenv('TP_VOLATILITY_THRESHOLD_LOW', '0.05'))    # < 5% = low vol
+TP_VOLATILITY_THRESHOLD_HIGH    = float(os.getenv('TP_VOLATILITY_THRESHOLD_HIGH', '0.15'))   # > 15% = high vol
+TRAILING_STOP_ACTIVATION_TP     = float(os.getenv('TRAILING_STOP_ACTIVATION_TP', '0.30'))    # Activate after +30% TP
+TRAILING_STOP_HIGH_VOL_PCT      = float(os.getenv('TRAILING_STOP_HIGH_VOL_PCT', '0.20'))     # 20% for high vol
+TRAILING_STOP_LOW_VOL_PCT       = float(os.getenv('TRAILING_STOP_LOW_VOL_PCT', '0.10'))      # 10% for low vol
+BREAKEVEN_AFTER_TP1             = os.getenv('BREAKEVEN_AFTER_TP1', 'true').lower() == 'true' # Move SL to breakeven
+
+# ── RESILIENCE: Circuit Breaker & Error Handling ──────────────────────────────
+ENABLE_CIRCUIT_BREAKER          = os.getenv('ENABLE_CIRCUIT_BREAKER', 'true').lower() == 'true'
+CIRCUIT_BREAKER_FAILURE_THRESHOLD = int(os.getenv('CIRCUIT_BREAKER_FAILURE_THRESHOLD', '5'))
+CIRCUIT_BREAKER_RECOVERY_TIMEOUT  = int(os.getenv('CIRCUIT_BREAKER_RECOVERY_TIMEOUT', '60'))   # 60 seconds
+CIRCUIT_BREAKER_HALF_OPEN_TIMEOUT= int(os.getenv('CIRCUIT_BREAKER_HALF_OPEN_TIMEOUT', '10'))   # 10 seconds
+ENABLE_ERROR_RECOVERY_LOGGING   = os.getenv('ENABLE_ERROR_RECOVERY_LOGGING', 'true').lower() == 'true'
+ERROR_ACCUMULATION_WINDOW       = int(os.getenv('ERROR_ACCUMULATION_WINDOW', '3600'))  # 1 hour window
+ALERT_ON_CIRCUIT_BREAK          = os.getenv('ALERT_ON_CIRCUIT_BREAK', 'true').lower() == 'true'
+
+# ── GRID TRADING AI: Grid Configuration ──────────────────────────────────────
+ENABLE_GRID_TRADING             = os.getenv('ENABLE_GRID_TRADING', 'false').lower() == 'true'
+GRID_LEVELS_COUNT               = int(os.getenv('GRID_LEVELS_COUNT', '10'))           # 10 grid levels
+GRID_UPPER_RANGE_PCT            = float(os.getenv('GRID_UPPER_RANGE_PCT', '20.0'))   # 20% above current
+GRID_LOWER_RANGE_PCT            = float(os.getenv('GRID_LOWER_RANGE_PCT', '20.0'))   # 20% below current
+GRID_MIN_INVESTMENT_SOL         = float(os.getenv('GRID_MIN_INVESTMENT_SOL', '0.5')) # Min 0.5 SOL per grid
+GRID_MAX_INVESTMENT_SOL         = float(os.getenv('GRID_MAX_INVESTMENT_SOL', '10.0'))# Max 10 SOL per grid
+GRID_USE_ML_PREDICTION          = os.getenv('GRID_USE_ML_PREDICTION', 'true').lower() == 'true'
+GRID_ML_LOOKBACK_HOURS          = int(os.getenv('GRID_ML_LOOKBACK_HOURS', '24'))     # 24h price history
+GRID_DYNAMIC_ADJUSTMENT         = os.getenv('GRID_DYNAMIC_ADJUSTMENT', 'true').lower() == 'true'
+GRID_REBALANCE_INTERVAL_MINUTES = int(os.getenv('GRID_REBALANCE_INTERVAL_MINUTES', '30'))
+GRID_PROFIT_THRESHOLD_PCT       = float(os.getenv('GRID_PROFIT_THRESHOLD_PCT', '2.0'))  # Take profit at +2% per fill
+GRID_STOP_LOSS_PCT              = float(os.getenv('GRID_STOP_LOSS_PCT', '15.0'))    # Stop grid at -15%
+GRID_AUTOMATE_LEVEL_SPACING     = os.getenv('GRID_AUTOMATE_LEVEL_SPACING', 'true').lower() == 'true'
+GRID_USE_BREAKOUT_DETECTION     = os.getenv('GRID_USE_BREAKOUT_DETECTION', 'true').lower() == 'true'
+
 # ── Supported chains / DEXs ───────────────────────────────────────────────────
 SUPPORTED_CHAINS = ["solana"]
 SUPPORTED_DEXS   = ["jupiter"]
