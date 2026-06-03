@@ -71,6 +71,9 @@ class TokenAnalyzer:
         except Exception as e:
             logger.error(f"analyze_token error: {e}")
             results['warnings'].append(f"Analysis error: {str(e)}")
+            results['risk_score'] = 100
+            results['trade_recommendation'] = 'REJECT_ANALYSIS_ERROR'
+            results['suggested_trade_percent'] = 0
             return results
 
     async def get_token_info(self, token_address: str) -> Dict:

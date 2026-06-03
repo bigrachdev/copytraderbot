@@ -1,0 +1,27 @@
+2026-06-03 16:22:32,578 - main - INFO - Starting main.py initialization...
+2026-06-03 16:22:32,585 - main - CRITICAL - Import error: name 'Optional' is not defined
+2026-06-03 16:22:32,585 - main - CRITICAL - Traceback (most recent call last):
+  File "C:\Users\user\Desktop\mbot\main.py", line 28, in <module>
+    from bot.telegram_bot import main as start_telegram_bot
+  File "C:\Users\user\Desktop\mbot\bot\telegram_bot.py", line 122, in <module>
+    class TelegramBot:
+  File "C:\Users\user\Desktop\mbot\bot\telegram_bot.py", line 434, in TelegramBot
+    async def _fetch_token_info(self, token_mint: str) -> Optional[Dict]:
+                                                          ^^^^^^^^
+NameError: name 'Optional' is not defined
+
+2026-06-03 16:23:08,672 - main - INFO - Starting main.py initialization...
+2026-06-03 16:23:08,688 - main - INFO - All imports successful
+2026-06-03 16:23:46,687 - main - INFO - Starting main.py initialization...
+2026-06-03 16:23:46,701 - main - INFO - All imports successful
+2026-06-03 16:24:57,475 - main - INFO - Starting main.py initialization...
+2026-06-03 16:24:57,491 - main - INFO - All imports successful
+2026-06-03 16:25:57,049 - main - INFO - Starting main.py initialization...
+2026-06-03 16:25:57,049 - main - INFO - Imported dotenv
+2026-06-03 16:25:57,049 - main - INFO - Imported threading
+2026-06-03 16:25:57,049 - main - INFO - Imported telegram_bot
+2026-06-03 16:25:57,049 - main - INFO - Imported wallet_monitor
+2026-06-03 16:25:57,049 - main - INFO - Imported keep_alive
+2026-06-03 16:25:57,049 - main - INFO - Imported config
+2026-06-03 16:25:57,049 - main - INFO - Imported telegram_broadcaster
+2026-06-03 16:25:57,049 - main - INFO - All imports successful

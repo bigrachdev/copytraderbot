@@ -4,7 +4,7 @@ Telegram bot with inline buttons for DEX copy trading
 import logging
 import asyncio
 import aiohttp
-from typing import Dict
+from typing import Dict, Optional
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, MessageHandler,

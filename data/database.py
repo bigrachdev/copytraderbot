@@ -1730,10 +1730,12 @@ class Database:
                      user_entry_price, copy_scale, sol_spent,
                      whale_block_time, copy_latency_ms, signal_count)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id
                 ''', (user_id, watched_wallet, token_address, whale_entry_price,
                       user_entry_price, copy_scale, sol_spent,
                       whale_block_time, copy_latency_ms, signal_count))
-                row_id = cursor.fetchone()[0] if cursor.fetchone() else -1
+                row = cursor.fetchone()
+                row_id = (row['id'] if isinstance(row, dict) else row[0]) if row else -1
             else:
                 cursor.execute('''
                     INSERT INTO copy_performance

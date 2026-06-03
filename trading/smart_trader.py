@@ -208,7 +208,8 @@ class SmartTrader:
             # Whitelist bypasses rejection
             whitelisted = token_address in self._get_whitelist(user_id)
             if not whitelisted and analysis['trade_recommendation'] in [
-                'REJECT_HONEYPOT', 'REJECT_CONCENTRATED', 'REJECT_TOO_RISKY'
+                'REJECT_HONEYPOT', 'REJECT_CONCENTRATED', 'REJECT_TOO_RISKY',
+                'REJECT_ANALYSIS_ERROR'
             ]:
                 result.update({'status': 'REJECTED', 'reason': analysis['trade_recommendation']})
                 await notification_engine.notify_user(
@@ -240,7 +241,7 @@ class SmartTrader:
             tx_result = await chain_swapper.execute_swap(
                 native_token, token_address, trade_amount, dex, keypair=keypair)
 
-            if tx_result and tx_result.get('status') in ('confirmed', 'quoted'):
+            if tx_result and tx_result.get('status') == 'confirmed':
                 received_amount = tx_result.get('expectedOutput', 0)
                 entry_price     = trade_amount / received_amount if received_amount else 0
                 result.update({'status': 'SUCCESS',
@@ -1078,7 +1079,7 @@ class SmartTrader:
             sell_result = await swapper.execute_swap(
                 token_address, WSOL_MINT, sell_qty, 'jupiter', keypair=keypair
             )
-            if not sell_result or sell_result.get('status') not in ('confirmed', 'quoted'):
+            if not sell_result or sell_result.get('status') != 'confirmed':
                 logger.warning(f"[Smart] Partial exit swap not confirmed — DB not updated")
                 return False
             sol_received = sell_result.get('expectedOutput', 0)
@@ -1102,7 +1103,7 @@ class SmartTrader:
             sell_result = await swapper.execute_swap(
                 token_address, WSOL_MINT, amount, 'jupiter', keypair=keypair
             )
-            if not sell_result or sell_result.get('status') not in ('confirmed', 'quoted'):
+            if not sell_result or sell_result.get('status') != 'confirmed':
                 logger.error(f"[Smart] Full exit swap failed [{reason}]")
                 return
             sol_received = sell_result.get('expectedOutput', 0)
@@ -1144,7 +1145,7 @@ class SmartTrader:
             )
             risk = analysis.get('risk_score', 100)
             rec = analysis.get('trade_recommendation', '')
-            if risk > SMART_REBUY_MAX_RISK or rec in ('REJECT_HONEYPOT', 'REJECT_CONCENTRATED', 'REJECT_TOO_RISKY'):
+            if risk > SMART_REBUY_MAX_RISK or rec in ('REJECT_HONEYPOT', 'REJECT_CONCENTRATED', 'REJECT_TOO_RISKY', 'REJECT_ANALYSIS_ERROR'):
                 logger.info(f"[Rebuy] {token_address[:10]} risk {risk} too high — skip")
                 return
 

@@ -610,7 +610,7 @@ class CopyTradingEngine:
                 token_mint, WSOL_MINT, existing.get('token_amount', 0), 'jupiter',
                 keypair=keypair
             )
-            if close_result and close_result.get('status') in ('confirmed', 'quoted'):
+            if close_result and close_result.get('status') == 'confirmed':
                 sol_received = close_result.get('expectedOutput', 0)
                 db.update_pending_trade_closed(
                     user_id, token_mint, sol_received,
@@ -713,14 +713,16 @@ class CopyTradingEngine:
                 logger.info(f"🔒 Using Jito private pool for MEV protection")
                 swap_result = await swapper.execute_swap(
                     input_mint, output_mint, amount, dex, keypair=keypair,
-                    use_private_tx=True
+                    use_private_tx=True,
+                    slippage_bps=int(adjusted_slippage * 100)
                 )
             else:
                 swap_result = await swapper.execute_swap(
-                    input_mint, output_mint, amount, dex, keypair=keypair
+                    input_mint, output_mint, amount, dex, keypair=keypair,
+                    slippage_bps=int(adjusted_slippage * 100)
                 )
 
-            if swap_result and swap_result.get('status') in ('confirmed', 'quoted'):
+            if swap_result and swap_result.get('status') == 'confirmed':
                 tokens_received = swap_result.get('expectedOutput', output_amount)
 
                 db.add_trade(
@@ -938,7 +940,7 @@ class CopyTradingEngine:
             sell_result = await swapper.execute_swap(
                 token_address, WSOL_MINT, amount, 'jupiter', keypair=keypair
             )
-            if not sell_result or sell_result.get('status') not in ('confirmed', 'quoted'):
+            if not sell_result or sell_result.get('status') != 'confirmed':
                 logger.error(f"Exit swap failed for position {position_id} [{reason}]")
                 return
 

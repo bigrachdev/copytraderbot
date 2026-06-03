@@ -547,9 +547,9 @@ class EnhancedFeatures:
                             return False, score
         except Exception as e:
             logger.error(f"RugCheck API error: {e}")
-            return True, 100  # Allow on API error (fail-open)
+            return False, 0
 
-        return True, 100
+        return False, 0
 
 
 # Singleton instance

@@ -26,7 +26,8 @@ class DEXSwapper:
     # ------------------------------------------------------------------
 
     async def get_jupiter_price(self, input_mint: str, output_mint: str,
-                                amount: float) -> Optional[Dict]:
+                                amount: float,
+                                slippage_bps: Optional[int] = None) -> Optional[Dict]:
         """Get a price quote from Jupiter.
 
         amount: SOL (float) when input is WSOL/SOL, raw token units (int) otherwise.
@@ -41,7 +42,7 @@ class DEXSwapper:
                         'inputMint':   input_mint,
                         'outputMint':  output_mint,
                         'amount':      raw_amount,
-                        'slippageBps': int(SLIPPAGE_TOLERANCE * 100),
+                        'slippageBps': slippage_bps if slippage_bps is not None else int(SLIPPAGE_TOLERANCE * 100),
                     },
                     timeout=aiohttp.ClientTimeout(total=JUPITER_QUOTE_TIMEOUT),
                 ) as resp:
@@ -62,9 +63,10 @@ class DEXSwapper:
         return None
 
     async def get_best_price(self, input_mint: str, output_mint: str,
-                             amount: float) -> Dict:
+                             amount: float,
+                             slippage_bps: Optional[int] = None) -> Dict:
         """Best price — Jupiter only."""
-        result = await self.get_jupiter_price(input_mint, output_mint, amount)
+        result = await self.get_jupiter_price(input_mint, output_mint, amount, slippage_bps)
         return result or {}
 
     # ------------------------------------------------------------------
@@ -101,14 +103,21 @@ class DEXSwapper:
 
     async def execute_swap(self, input_mint: str, output_mint: str,
                            amount: float, dex: str = 'jupiter',
-                           keypair=None, priority_override: int = None) -> Optional[Dict]:
+                           keypair=None, priority_override: int = None,
+                           slippage_bps: Optional[int] = None,
+                           use_private_tx: bool = False) -> Optional[Dict]:
         """Execute swap via Jupiter. keypair must be a solders Keypair to submit on-chain.
         priority_override: fixed microlamports fee; None = auto (75th percentile)."""
-        return await self.execute_jupiter_swap(input_mint, output_mint, amount, keypair, priority_override)
+        if use_private_tx:
+            logger.warning("Private/Jito submission requested but not implemented; using public RPC")
+        return await self.execute_jupiter_swap(
+            input_mint, output_mint, amount, keypair, priority_override, slippage_bps
+        )
 
     async def execute_jupiter_swap(self, input_mint: str, output_mint: str,
                                    amount: float, keypair=None,
-                                   priority_override: int = None) -> Optional[Dict]:
+                                   priority_override: int = None,
+                                   slippage_bps: Optional[int] = None) -> Optional[Dict]:
         """
         Full Jupiter V6 swap pipeline:
           1. GET /quote
@@ -133,7 +142,7 @@ class DEXSwapper:
                         'inputMint':   input_mint,
                         'outputMint':  output_mint,
                         'amount':      raw_amount,
-                        'slippageBps': int(SLIPPAGE_TOLERANCE * 100),
+                        'slippageBps': slippage_bps if slippage_bps is not None else int(SLIPPAGE_TOLERANCE * 100),
                     },
                     timeout=aiohttp.ClientTimeout(total=JUPITER_QUOTE_TIMEOUT),
                 ) as resp:
@@ -215,6 +224,18 @@ class DEXSwapper:
                     return None
 
                 signature = result.get('result', '')
+                confirmed = await self._wait_for_confirmation(session, signature)
+                if not confirmed:
+                    logger.error(f"Swap not confirmed before timeout: {signature[:20]}...")
+                    return {
+                        'dex':          'jupiter',
+                        'status':       'submitted',
+                        'signature':    signature,
+                        'inputAmount':  amount,
+                        'expectedOutput': price,
+                        'priceImpact':  price_impact,
+                        'priorityFeeMicrolamports': priority_fee,
+                    }
                 logger.info(f"✅ Swap submitted: {signature[:20]}…  "
                             f"impact={price_impact:.2f}%  fee={priority_fee}μL")
 
@@ -234,6 +255,43 @@ class DEXSwapper:
         except Exception as e:
             logger.error(f"execute_jupiter_swap error: {e}", exc_info=True)
             return None
+
+    async def _wait_for_confirmation(self, session: aiohttp.ClientSession,
+                                     signature: str,
+                                     timeout_seconds: int = TX_SUBMIT_TIMEOUT) -> bool:
+        """Poll RPC until the submitted transaction is confirmed or finalized."""
+        if not signature:
+            return False
+
+        deadline = asyncio.get_running_loop().time() + timeout_seconds
+        while asyncio.get_running_loop().time() < deadline:
+            try:
+                async with session.post(
+                    SOLANA_RPC_URL,
+                    json={
+                        "jsonrpc": "2.0", "id": 1,
+                        "method": "getSignatureStatuses",
+                        "params": [[signature], {"searchTransactionHistory": True}],
+                    },
+                    timeout=aiohttp.ClientTimeout(total=5),
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        statuses = (data.get('result') or {}).get('value') or []
+                        status = statuses[0] if statuses else None
+                        if status:
+                            if status.get('err'):
+                                logger.error(f"Confirmed transaction failed: {status['err']}")
+                                return False
+                            confirmation = status.get('confirmationStatus')
+                            if confirmation in ('confirmed', 'finalized'):
+                                return True
+            except Exception as e:
+                logger.warning(f"Confirmation poll failed: {e}")
+
+            await asyncio.sleep(1)
+
+        return False
 
     # ------------------------------------------------------------------
     # Internal helpers
