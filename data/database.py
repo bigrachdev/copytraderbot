@@ -864,30 +864,36 @@ class Database:
 
         if self.use_postgres:
             cursor.execute('SELECT COUNT(*) as total FROM trades WHERE user_id = %s', (user_id,))
-            total_trades = cursor.fetchone()['total']
+            row = cursor.fetchone()
+            total_trades = row['total'] if row else 0
 
             cursor.execute('''
                 SELECT COUNT(*) as copy FROM trades WHERE user_id = %s AND is_copy = TRUE
             ''', (user_id,))
-            copy_trades = cursor.fetchone()['copy']
+            row = cursor.fetchone()
+            copy_trades = row['copy'] if row else 0
 
             cursor.execute('''
                 SELECT SUM(input_amount) as total_volume FROM trades WHERE user_id = %s
             ''', (user_id,))
-            total_volume = cursor.fetchone()['total_volume'] or 0
+            row = cursor.fetchone()
+            total_volume = row['total_volume'] if row and row['total_volume'] is not None else 0
         else:
             cursor.execute('SELECT COUNT(*) as total FROM trades WHERE user_id = ?', (user_id,))
-            total_trades = cursor.fetchone()['total']
+            row = cursor.fetchone()
+            total_trades = row['total'] if row else 0
 
             cursor.execute('''
                 SELECT COUNT(*) as copy FROM trades WHERE user_id = ? AND is_copy = 1
             ''', (user_id,))
-            copy_trades = cursor.fetchone()['copy']
+            row = cursor.fetchone()
+            copy_trades = row['copy'] if row else 0
 
             cursor.execute('''
                 SELECT SUM(input_amount) as total_volume FROM trades WHERE user_id = ?
             ''', (user_id,))
-            total_volume = cursor.fetchone()['total_volume'] or 0
+            row = cursor.fetchone()
+            total_volume = row['total_volume'] if row and row['total_volume'] is not None else 0
 
         conn.close()
         return {

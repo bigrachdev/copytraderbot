@@ -48,12 +48,26 @@ class KeyEncryption:
         key = base64.urlsafe_b64encode(kdf.derive(password.encode()))
         return Fernet(key)
 
+    def _refresh_passwords(self):
+        """Reload master and fallback passwords from the current environment."""
+        self.master_password = os.getenv('ENCRYPTION_MASTER_PASSWORD')
+        self.fallback_passwords = [
+            p.strip()
+            for p in os.getenv('ENCRYPTION_FALLBACK_PASSWORDS', '').split(',')
+            if p.strip()
+        ]
+
     def encrypt(self, private_key: str) -> str:
         """Encrypt private key with a fresh random salt.
 
         Stored format: base64(salt || fernet_token)
         The first SALT_SIZE bytes of the decoded value are the salt.
         """
+        self._refresh_passwords()
+        if not self.master_password:
+            logger.error("Encryption error: ENCRYPTION_MASTER_PASSWORD is not configured")
+            return None
+
         try:
             salt = os.urandom(self.SALT_SIZE)
             fernet = self._get_fernet(salt, self.master_password)
@@ -69,6 +83,11 @@ class KeyEncryption:
 
         Expects the format written by encrypt(): base64(salt || fernet_token).
         """
+        self._refresh_passwords()
+        if not self.master_password:
+            logger.error("Decryption error: ENCRYPTION_MASTER_PASSWORD is not configured")
+            return None
+
         try:
             combined = base64.b64decode(encrypted_key.encode())
             salt = combined[:self.SALT_SIZE]
@@ -77,7 +96,6 @@ class KeyEncryption:
             logger.error(f"Decryption error: invalid encrypted payload: {e}")
             return None
 
-        # Try current password first, then fallbacks if configured.
         passwords_to_try = [self.master_password] + list(self.fallback_passwords or [])
         for password in passwords_to_try:
             try:

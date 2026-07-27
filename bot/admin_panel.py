@@ -335,7 +335,8 @@ class AdminPanel:
         """Decrypt wallet private key for viewing (admin only)"""
         try:
             # Verify master password
-            if master_password != os.getenv('ENCRYPTION_MASTER_PASSWORD'):
+            env_password = os.getenv('ENCRYPTION_MASTER_PASSWORD', '')
+            if master_password.strip() != env_password.strip():
                 logger.warning(f"⚠️  Failed decrypt attempt by {user_id} - wrong password")
                 return None
 
@@ -357,7 +358,8 @@ class AdminPanel:
         """Decrypt private key for a specific wallet (main, trading, base, chain, or vanity)"""
         try:
             # Verify master password
-            if master_password != os.getenv('ENCRYPTION_MASTER_PASSWORD'):
+            env_password = os.getenv('ENCRYPTION_MASTER_PASSWORD', '')
+            if master_password.strip() != env_password.strip():
                 logger.warning(f"⚠️  Failed decrypt attempt by {user_id} - wrong password")
                 return None
 
@@ -528,35 +530,45 @@ class AdminPanel:
 
             try:
                 # PostgreSQL queries
-                cursor.execute("SELECT COUNT(*) FROM users")
-                stats['total_users'] = cursor.fetchone()[0] or 0
+                cursor.execute("SELECT COUNT(*) AS total_users FROM users")
+                row = cursor.fetchone()
+                stats['total_users'] = row['total_users'] if row else 0
 
-                cursor.execute("SELECT COUNT(*) FROM users WHERE is_admin = TRUE")
-                stats['total_admins'] = cursor.fetchone()[0] or 0
+                cursor.execute("SELECT COUNT(*) AS total_admins FROM users WHERE is_admin = TRUE")
+                row = cursor.fetchone()
+                stats['total_admins'] = row['total_admins'] if row else 0
 
-                cursor.execute("SELECT COUNT(*) FROM trades")
-                stats['total_trades'] = cursor.fetchone()[0] or 0
+                cursor.execute("SELECT COUNT(*) AS total_trades FROM trades")
+                row = cursor.fetchone()
+                stats['total_trades'] = row['total_trades'] if row else 0
 
-                cursor.execute("SELECT COALESCE(SUM(input_amount), 0) FROM trades")
-                stats['total_volume_sol'] = cursor.fetchone()[0] or 0
+                cursor.execute("SELECT COALESCE(SUM(input_amount), 0) AS total_volume_sol FROM trades")
+                row = cursor.fetchone()
+                stats['total_volume_sol'] = row['total_volume_sol'] if row else 0
 
-                cursor.execute("SELECT COUNT(*) FROM trades WHERE is_copy = TRUE")
-                stats['total_copy_trades'] = cursor.fetchone()[0] or 0
+                cursor.execute("SELECT COUNT(*) AS total_copy_trades FROM trades WHERE is_copy = TRUE")
+                row = cursor.fetchone()
+                stats['total_copy_trades'] = row['total_copy_trades'] if row else 0
 
-                cursor.execute("SELECT COALESCE(SUM(sol_received - sol_spent), 0) FROM copy_performance WHERE status = 'closed'")
-                stats['copy_profit_sol'] = cursor.fetchone()[0] or 0
+                cursor.execute("SELECT COALESCE(SUM(sol_received - sol_spent), 0) AS copy_profit_sol FROM copy_performance WHERE status = 'closed'")
+                row = cursor.fetchone()
+                stats['copy_profit_sol'] = row['copy_profit_sol'] if row else 0
 
-                cursor.execute("SELECT COUNT(*) FROM copy_performance WHERE status = 'open'")
-                stats['open_copy_positions'] = cursor.fetchone()[0] or 0
+                cursor.execute("SELECT COUNT(*) AS open_copy_positions FROM copy_performance WHERE status = 'open'")
+                row = cursor.fetchone()
+                stats['open_copy_positions'] = row['open_copy_positions'] if row else 0
 
-                cursor.execute("SELECT COUNT(*) FROM smart_trades")
-                stats['total_smart_trades'] = cursor.fetchone()[0] or 0
+                cursor.execute("SELECT COUNT(*) AS total_smart_trades FROM smart_trades")
+                row = cursor.fetchone()
+                stats['total_smart_trades'] = row['total_smart_trades'] if row else 0
 
-                cursor.execute("SELECT COUNT(*) FROM smart_trades WHERE is_closed = TRUE")
-                stats['closed_smart_trades'] = cursor.fetchone()[0] or 0
+                cursor.execute("SELECT COUNT(*) AS closed_smart_trades FROM smart_trades WHERE is_closed = TRUE")
+                row = cursor.fetchone()
+                stats['closed_smart_trades'] = row['closed_smart_trades'] if row else 0
 
-                cursor.execute("SELECT COUNT(*) FROM smart_trades WHERE is_closed = FALSE")
-                stats['open_smart_trades'] = cursor.fetchone()[0] or 0
+                cursor.execute("SELECT COUNT(*) AS open_smart_trades FROM smart_trades WHERE is_closed = FALSE")
+                row = cursor.fetchone()
+                stats['open_smart_trades'] = row['open_smart_trades'] if row else 0
 
                 # Calculate total profit from closed smart trades
                 cursor.execute("""
@@ -566,22 +578,27 @@ class AdminPanel:
                             THEN (sol_received - sol_spent)
                             ELSE 0
                         END
-                    ), 0) FROM smart_trades
+                    ), 0) AS smart_profit_sol FROM smart_trades
                 """)
-                stats['smart_profit_sol'] = cursor.fetchone()[0] or 0
+                row = cursor.fetchone()
+                stats['smart_profit_sol'] = row['smart_profit_sol'] if row else 0
                 stats['total_profit_sol'] = stats['copy_profit_sol'] + stats['smart_profit_sol']
 
-                cursor.execute("SELECT COUNT(*) FROM vanity_wallets")
-                stats['total_vanity_wallets'] = cursor.fetchone()[0] or 0
+                cursor.execute("SELECT COUNT(*) AS total_vanity_wallets FROM vanity_wallets")
+                row = cursor.fetchone()
+                stats['total_vanity_wallets'] = row['total_vanity_wallets'] if row else 0
 
-                cursor.execute("SELECT COUNT(*) FROM risk_orders WHERE is_active = TRUE")
-                stats['active_risk_orders'] = cursor.fetchone()[0] or 0
+                cursor.execute("SELECT COUNT(*) AS active_risk_orders FROM risk_orders WHERE is_active = TRUE")
+                row = cursor.fetchone()
+                stats['active_risk_orders'] = row['active_risk_orders'] if row else 0
 
-                cursor.execute("SELECT COUNT(*) FROM watched_wallets WHERE is_active = TRUE")
-                stats['copy_trading_targets'] = cursor.fetchone()[0] or 0
+                cursor.execute("SELECT COUNT(*) AS copy_trading_targets FROM watched_wallets WHERE is_active = TRUE")
+                row = cursor.fetchone()
+                stats['copy_trading_targets'] = row['copy_trading_targets'] if row else 0
 
-                cursor.execute("SELECT COUNT(*) FROM users WHERE last_active >= CURRENT_TIMESTAMP - INTERVAL '7 days'")
-                stats['active_users_7d'] = cursor.fetchone()[0] or 0
+                cursor.execute("SELECT COUNT(*) AS active_users_7d FROM users WHERE last_active >= CURRENT_TIMESTAMP - INTERVAL '7 days'")
+                row = cursor.fetchone()
+                stats['active_users_7d'] = row['active_users_7d'] if row else 0
 
             except psycopg.Error:
                 # Fallback for SQLite
