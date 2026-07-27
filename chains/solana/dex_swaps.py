@@ -5,6 +5,7 @@ import logging
 import aiohttp
 import asyncio
 import base64
+from decimal import Decimal
 from typing import Optional, Dict
 from config import (
     JUPITER_API, SLIPPAGE_TOLERANCE, WSOL_MINT, SOL_MINT, SOLANA_RPC_URL,
@@ -191,10 +192,12 @@ class DEXSwapper:
                     return None
 
                 # ── Step 3: deserialise → sign ────────────────────────────────
-                tx_bytes  = base64.b64decode(swap_tx_b64)
-                tx        = VersionedTransaction.from_bytes(tx_bytes)
-                signed_tx = VersionedTransaction(tx.message, [keypair])
-                signed_b64 = base64.b64encode(bytes(signed_tx)).decode()
+                # BUGFIX: Use tx.sign([keypair]) instead of VersionedTransaction(tx.message, [keypair])
+                # The latter discards any existing partial signatures (e.g. Jupiter fee accounts).
+                tx_bytes = base64.b64decode(swap_tx_b64)
+                tx = VersionedTransaction.from_bytes(tx_bytes)
+                tx.sign([keypair])
+                signed_b64 = base64.b64encode(bytes(tx)).decode()
 
                 # ── Step 4: submit ────────────────────────────────────────────
                 async with session.post(
@@ -236,8 +239,13 @@ class DEXSwapper:
                         'priceImpact':  price_impact,
                         'priorityFeeMicrolamports': priority_fee,
                     }
-                logger.info(f"✅ Swap submitted: {signature[:20]}…  "
-                            f"impact={price_impact:.2f}%  fee={priority_fee}μL")
+                fill = await self._fetch_swap_fill(session, signature)
+                actual_input = fill.get('inputAmount') if fill else None
+                actual_output = fill.get('outputAmount') if fill else None
+                fill_price = fill.get('fillPrice') if fill else None
+
+                logger.info(f"Swap confirmed: {signature[:20]}...  "
+                            f"impact={price_impact:.2f}%  fee={priority_fee}uL")
 
                 return {
                     'dex':          'jupiter',
@@ -245,6 +253,9 @@ class DEXSwapper:
                     'signature':    signature,
                     'inputAmount':  amount,
                     'expectedOutput': price,
+                    'actualInput':  actual_input if actual_input is not None else amount,
+                    'actualOutput': actual_output if actual_output is not None else price,
+                    'fillPrice':    fill_price if fill_price is not None else price,
                     'priceImpact':  price_impact,
                     'priorityFeeMicrolamports': priority_fee,
                 }
@@ -292,6 +303,88 @@ class DEXSwapper:
             await asyncio.sleep(1)
 
         return False
+
+    async def _fetch_swap_fill(self, session: aiohttp.ClientSession, signature: str) -> Optional[Dict]:
+        """Fetch the executed transaction and derive actual input/output amounts."""
+        try:
+            payload = {
+                "jsonrpc": "2.0", "id": 1,
+                "method": "getTransaction",
+                "params": [
+                    signature,
+                    {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0}
+                ]
+            }
+            async with session.post(SOLANA_RPC_URL, json=payload, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.json()
+
+            tx = data.get('result') or {}
+            meta = tx.get('meta') or {}
+            if meta.get('err'):
+                return None
+
+            def _balance_map(balances):
+                result = {}
+                for bal in balances or []:
+                    mint = bal.get('mint')
+                    if not mint:
+                        continue
+                    idx = bal.get('accountIndex', mint)
+                    token_amount = bal.get('uiTokenAmount', {}) or {}
+                    amount = token_amount.get('uiAmount')
+                    if amount is None:
+                        raw = token_amount.get('amount')
+                        decimals = int(token_amount.get('decimals', 0) or 0)
+                        if raw is not None:
+                            try:
+                                amount = Decimal(str(raw)) / (Decimal(10) ** decimals)
+                            except Exception:
+                                amount = 0
+                    result[(idx, mint)] = float(amount or 0)
+                return result
+
+            pre_map = _balance_map(meta.get('preTokenBalances'))
+            post_map = _balance_map(meta.get('postTokenBalances'))
+            input_mint = output_mint = None
+            input_amount = output_amount = 0.0
+
+            for key in set(pre_map) | set(post_map):
+                pre = pre_map.get(key, 0.0)
+                post = post_map.get(key, 0.0)
+                delta = post - pre
+                _, mint = key
+                if delta < 0 and abs(delta) > input_amount:
+                    input_mint = mint
+                    input_amount = abs(delta)
+                elif delta > 0 and delta > output_amount:
+                    output_mint = mint
+                    output_amount = delta
+
+            if (not input_mint or not output_mint) and meta.get('preBalances') and meta.get('postBalances'):
+                sol_delta = (meta['postBalances'][0] - meta['preBalances'][0]) / 1e9
+                if sol_delta < -1e-6 and not input_mint:
+                    input_mint = WSOL_MINT
+                    input_amount = abs(sol_delta)
+                elif sol_delta > 1e-6 and not output_mint:
+                    output_mint = WSOL_MINT
+                    output_amount = sol_delta
+
+            if not input_mint or not output_mint:
+                return None
+
+            fill_price = (input_amount / output_amount) if output_amount > 0 else 0.0
+            return {
+                'inputMint': input_mint,
+                'outputMint': output_mint,
+                'inputAmount': input_amount,
+                'outputAmount': output_amount,
+                'fillPrice': fill_price,
+            }
+        except Exception as e:
+            logger.debug(f"Fill fetch failed for {signature[:10]}: {e}")
+            return None
 
     # ------------------------------------------------------------------
     # Internal helpers

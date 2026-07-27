@@ -72,7 +72,7 @@ async def test_initialization():
     # 5. Test conversation states
     print("\n5️⃣  Testing Conversation States...")
     try:
-        from telegram_bot import (
+        from bot.telegram_bot import (
             START, MENU, IMPORT_KEY, SWAP_SELECT, SWAP_AMOUNT, 
             CONFIRM_SWAP, ADD_WALLET, STOPLOS_AMOUNT, TAKE_PROFIT_PERCENT,
             ANALYTICS_TYPE, HARDWARE_WALLET_SELECT, SELL_AMOUNT,
@@ -87,15 +87,13 @@ async def test_initialization():
     # 6. Test DEX integration
     print("\n6️⃣  Testing DEX Integration...")
     try:
-        from dex_swaps import swapper
+        from chains.solana.dex_swaps import swapper
         print("   ✅ DEX swapper loaded")
         # Verify DEX endpoints exist
-        if swapper.jupiter_api:
+        if getattr(swapper, 'jupiter_api', None):
             print(f"   ✅ Jupiter API configured: {swapper.jupiter_api[:50]}...")
-        if swapper.raydium_api:
-            print(f"   ✅ Raydium API configured")
-        if swapper.orca_url:
-            print(f"   ✅ Orca URL configured")
+        else:
+            print("   ⚠️ Jupiter API not configured")
     except Exception as e:
         print(f"   ❌ DEX error: {e}")
         return False
@@ -103,7 +101,7 @@ async def test_initialization():
     # 7. Test analytics
     print("\n7️⃣  Testing Analytics...")
     try:
-        from analytics import analytics
+        from data.analytics import analytics
         metrics = analytics.calculate_performance_metrics(123456789)
         print("   ✅ Analytics metrics calculated")
         print(f"      Total Trades: {metrics['total_trades']}")

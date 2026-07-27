@@ -6,14 +6,19 @@ import asyncio
 import os
 import sys
 import traceback
+from dotenv import load_dotenv
 
 for _stream in (sys.stdout, sys.stderr):
     if hasattr(_stream, "reconfigure"):
         _stream.reconfigure(encoding="utf-8", errors="replace")
 
+load_dotenv()
+
 # Configure logging FIRST before any other imports
+log_level_name = os.getenv('LOG_LEVEL', 'INFO').upper()
+log_level = getattr(logging, log_level_name, logging.INFO)
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=log_level,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler('bot.log'),
@@ -21,6 +26,10 @@ logging.basicConfig(
     ],
     force=True
 )
+logging.getLogger('httpx').setLevel(logging.INFO)
+logging.getLogger('httpcore').setLevel(logging.INFO)
+logging.getLogger('telegram').setLevel(logging.INFO)
+logging.getLogger('telegram.ext').setLevel(logging.INFO)
 logger = logging.getLogger(__name__)
 
 logger.info("Starting main.py initialization...")

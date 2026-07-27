@@ -25,3 +25,57 @@ NameError: name 'Optional' is not defined
 2026-06-03 16:25:57,049 - main - INFO - Imported config
 2026-06-03 16:25:57,049 - main - INFO - Imported telegram_broadcaster
 2026-06-03 16:25:57,049 - main - INFO - All imports successful
+2026-07-03 01:15:53,901 - main - INFO - Starting main.py initialization...
+2026-07-03 01:15:53,903 - main - INFO - Imported dotenv
+2026-07-03 01:15:53,903 - main - INFO - Imported threading
+2026-07-03 01:15:53,903 - main - INFO - Imported telegram_bot
+2026-07-03 01:15:53,903 - main - INFO - Imported wallet_monitor
+2026-07-03 01:15:53,905 - main - INFO - Imported keep_alive
+2026-07-03 01:15:53,905 - main - INFO - Imported config
+2026-07-03 01:15:53,905 - main - INFO - Imported telegram_broadcaster
+2026-07-03 01:15:53,905 - main - INFO - All imports successful
+2026-07-03 01:37:23,549 - main - INFO - Starting main.py initialization...
+2026-07-03 01:37:23,553 - main - INFO - Imported dotenv
+2026-07-03 01:37:23,553 - main - INFO - Imported threading
+2026-07-03 01:37:23,553 - main - INFO - Imported telegram_bot
+2026-07-03 01:37:23,553 - main - INFO - Imported wallet_monitor
+2026-07-03 01:37:23,559 - main - INFO - Imported keep_alive
+2026-07-03 01:37:23,559 - main - INFO - Imported config
+2026-07-03 01:37:23,559 - main - INFO - Imported telegram_broadcaster
+2026-07-03 01:37:23,559 - main - INFO - All imports successful
+2026-07-03 01:57:12,521 - main - INFO - Starting main.py initialization...
+2026-07-03 01:57:12,522 - main - INFO - Imported dotenv
+2026-07-03 01:57:12,522 - main - INFO - Imported threading
+2026-07-03 01:57:12,522 - main - INFO - Imported telegram_bot
+2026-07-03 01:57:12,522 - main - INFO - Imported wallet_monitor
+2026-07-03 01:57:12,523 - main - INFO - Imported keep_alive
+2026-07-03 01:57:12,524 - main - INFO - Imported config
+2026-07-03 01:57:12,524 - main - INFO - Imported telegram_broadcaster
+2026-07-03 01:57:12,524 - main - INFO - All imports successful
+2026-07-03 01:57:32,708 - main - INFO - Starting main.py initialization...
+2026-07-03 01:57:32,708 - main - INFO - Imported dotenv
+2026-07-03 01:57:32,708 - main - INFO - Imported threading
+2026-07-03 01:57:32,708 - main - INFO - Imported telegram_bot
+2026-07-03 01:57:32,708 - main - INFO - Imported wallet_monitor
+2026-07-03 01:57:32,710 - main - INFO - Imported keep_alive
+2026-07-03 01:57:32,710 - main - INFO - Imported config
+2026-07-03 01:57:32,710 - main - INFO - Imported telegram_broadcaster
+2026-07-03 01:57:32,710 - main - INFO - All imports successful
+2026-07-27 02:44:08,710 - main - INFO - Starting main.py initialization...
+2026-07-27 02:44:08,711 - main - INFO - Imported dotenv
+2026-07-27 02:44:08,712 - main - INFO - Imported threading
+2026-07-27 02:44:08,712 - main - INFO - Imported telegram_bot
+2026-07-27 02:44:08,712 - main - INFO - Imported wallet_monitor
+2026-07-27 02:44:08,726 - main - INFO - Imported keep_alive
+2026-07-27 02:44:08,726 - main - INFO - Imported config
+2026-07-27 02:44:08,728 - main - INFO - Imported telegram_broadcaster
+2026-07-27 02:44:08,728 - main - INFO - All imports successful
+2026-07-27 02:56:59,343 - main - INFO - Starting main.py initialization...
+2026-07-27 02:56:59,343 - main - INFO - Imported dotenv
+2026-07-27 02:56:59,343 - main - INFO - Imported threading
+2026-07-27 02:56:59,343 - main - INFO - Imported telegram_bot
+2026-07-27 02:56:59,343 - main - INFO - Imported wallet_monitor
+2026-07-27 02:56:59,350 - main - INFO - Imported keep_alive
+2026-07-27 02:56:59,350 - main - INFO - Imported config
+2026-07-27 02:56:59,350 - main - INFO - Imported telegram_broadcaster
+2026-07-27 02:56:59,350 - main - INFO - All imports successful

@@ -1054,6 +1054,10 @@ class Database:
             logger.error(f"Error getting users list: {e}")
             return []
 
+    def get_all_users(self) -> List[Dict]:
+        """Alias for get_all_users_list for legacy callers."""
+        return self.get_all_users_list()
+
     def get_user_trade_stats(self, user_id: int) -> Dict:
         """Get trade statistics for a user"""
         try:
@@ -2492,4 +2496,13 @@ class Database:
 
 
 # Singleton instance
+# Ensure direct imports of data.database still run startup migrations and patch extensions.
 db = Database()
+try:
+    from data.migrations import run_migrations
+    from data.db_extensions import patch_database
+
+    run_migrations(db)
+    patch_database(db)
+except Exception as e:
+    logger.error(f"Migration/patch error on database import: {e}")

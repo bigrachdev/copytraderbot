@@ -9,6 +9,7 @@ from data.database import db
 logger = logging.getLogger(__name__)
 
 
+
 class RiskManager:
     """Manage trading risks with stop-loss and take-profit"""
     

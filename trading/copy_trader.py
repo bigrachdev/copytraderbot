@@ -598,11 +598,16 @@ class CopyTradingEngine:
             return True
         return False
 
-    async def _close_existing_position(self, user_id: int, token_mint: str):
-        """Exit any open position in token_mint before entering a new one."""
+    async def _close_existing_position(self, user_id: int, token_mint: str) -> bool:
+        """Exit any open position in token_mint before entering a new one.
+        
+        BUGFIX: Returns False if close fails so caller can abort the new entry.
+        Previously the caller ignored the result and opened a new position anyway,
+        potentially doubling exposure.
+        """
         existing = db.get_pending_trade_by_token(user_id, token_mint)
         if not existing:
-            return
+            return True  # Nothing to close, proceed
         logger.info(f"📤 Closing existing position in {token_mint[:8]}…")
         try:
             keypair = self._get_user_keypair(user_id)
@@ -611,14 +616,19 @@ class CopyTradingEngine:
                 keypair=keypair
             )
             if close_result and close_result.get('status') == 'confirmed':
-                sol_received = close_result.get('expectedOutput', 0)
+                sol_received = close_result.get('actualOutput', close_result.get('expectedOutput', 0))
                 db.update_pending_trade_closed(
                     user_id, token_mint, sol_received,
                     close_result.get('signature', 'close')
                 )
                 logger.info(f"✅ Closed existing position, received {sol_received:.4f} SOL")
+                return True
+            else:
+                logger.error(f"❌ Failed to close existing position in {token_mint[:8]} — aborting new entry")
+                return False
         except Exception as e:
             logger.error(f"Error closing existing position: {e}")
+            return False
 
     def _weighted_amount(self, whale_amount: float, wallet_config: Dict) -> float:
         """Flat copy_scale × weight fallback for when user balance is unavailable."""
@@ -723,7 +733,7 @@ class CopyTradingEngine:
                 )
 
             if swap_result and swap_result.get('status') == 'confirmed':
-                tokens_received = swap_result.get('expectedOutput', output_amount)
+                tokens_received = swap_result.get('actualOutput', swap_result.get('expectedOutput', output_amount))
 
                 db.add_trade(
                     user_id=user_id,
@@ -944,7 +954,7 @@ class CopyTradingEngine:
                 logger.error(f"Exit swap failed for position {position_id} [{reason}]")
                 return
 
-            sol_received   = sell_result.get('expectedOutput', 0)
+            sol_received   = sell_result.get('actualOutput', sell_result.get('expectedOutput', 0))
             price_info     = await swapper.get_best_price(WSOL_MINT, token_address, 1.0)
             _tps           = price_info.get('price', 0) if price_info else 0
             exit_price     = (1.0 / _tps) if _tps > 0 else 0  # SOL per token

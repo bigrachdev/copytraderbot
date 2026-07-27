@@ -1,4 +1,4 @@
-"""
+﻿"""
 Smart Token Analyzer - Analyzes Solana token safety and risk factors.
 Uses Solscan + Birdeye + DexScreener (all free/no-key endpoints).
 """
@@ -27,7 +27,7 @@ class TokenAnalyzer:
         self.birdeye_api      = BIRDEYE_API_URL
         self.solscan_api      = SOLSCAN_API_URL
         self.dex_screener_api = DEXSCREENER_API_URL
-        logger.info("✅ Token analyzer initialized")
+        logger.info("âœ… Token analyzer initialized")
 
     # =========================================================================
     # Public entry point
@@ -65,7 +65,7 @@ class TokenAnalyzer:
             results['trade_recommendation'], results['suggested_trade_percent'] = \
                 self._generate_recommendation(results['risk_score'], m)
 
-            logger.info(f"Token analysis: {token_address[:10]}… risk={results['risk_score']:.0f}")
+            logger.info(f"Token analysis: {token_address[:10]}â€¦ risk={results['risk_score']:.0f}")
             return results
 
         except Exception as e:
@@ -159,7 +159,16 @@ class TokenAnalyzer:
                              timeout=RPC_TIMEOUT)
             if r.status_code == 200:
                 holders = r.json().get('data', [])
-                top10 = sum(float(h.get('amount', 0)) for h in holders[:10])
+                top10 = 0.0
+                for holder in holders[:10]:
+                    pct = holder.get('percent')
+                    if pct is None:
+                        pct = holder.get('share')
+                    if pct is None:
+                        pct = holder.get('ratio')
+                    if pct is None:
+                        pct = holder.get('amount', 0)
+                    top10 += float(pct or 0)
                 metrics['top_10_percent'] = top10
                 if top10 > TOKEN_HOLDER_CONCENTRATION_DANGER:
                     metrics['is_concentrated'] = True
@@ -335,3 +344,4 @@ class TokenAnalyzer:
 
 # Global instance
 token_analyzer = TokenAnalyzer()
+

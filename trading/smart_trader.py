@@ -1,12 +1,12 @@
-"""
-Smart Trader v2 — Intelligent autonomous trading engine
+﻿"""
+Smart Trader v2 â€” Intelligent autonomous trading engine
 
 Features:
   1.  Token analysis & safety scoring        (honeypot, liquidity, holder concentration)
   2.  Trending token discovery               (DexScreener + Birdeye trending feeds)
   3.  Momentum scoring                       (volume spike, price momentum, holder growth, buy/sell pressure)
-  4.  Auto Copy Trade mode                   (whale-driven loop — rank by win_rate × avg_profit)
-  5.  Auto Smart Trade mode                  (token-scan loop — DexScreener + Birdeye every 30 min)
+  4.  Auto Copy Trade mode                   (whale-driven loop â€” rank by win_rate Ã— avg_profit)
+  5.  Auto Smart Trade mode                  (token-scan loop â€” DexScreener + Birdeye every 30 min)
   6.  Solana-only execution                  (single-chain trading flow)
   7.  Kelly Criterion position sizing        (real historical win_rate/avg_win/avg_loss from DB)
   8.  Portfolio limits                       (max open positions, max % per token)
@@ -54,7 +54,7 @@ from config import (
 
 logger = logging.getLogger(__name__)
 
-# ── Local aliases (all values now live in config.py / .env) ──────────────────
+# â”€â”€ Local aliases (all values now live in config.py / .env) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 MIN_TRADE_SOL          = SMART_MIN_TRADE_SOL
 MAX_OPEN_POSITIONS     = SMART_MAX_OPEN_POSITIONS
 MAX_PCT_PER_TOKEN      = SMART_MAX_PCT_PER_TOKEN
@@ -93,14 +93,33 @@ class SmartTrader:
         # Pending suggestions: user_id -> list of token dicts
         self._pending_suggestions: Dict[int, List[Dict]] = {}
 
-        logger.info("✅ Smart Trader v2 initialized")
+        logger.info("âœ… Smart Trader v2 initialized")
+
+    def get_user_trade_percent(self, user_id: int, default: float = 20.0) -> float:
+        """Return the user's configured trade percent."""
+        try:
+            user = db.get_user(user_id)
+            if not user:
+                return default
+            return float(user.get("trade_percent", default) or default)
+        except Exception as e:
+            logger.error(f"get_user_trade_percent error: {e}")
+            return default
+
+    def set_user_trade_percent(self, user_id: int, percent: float) -> bool:
+        """Persist the user's configured trade percent."""
+        try:
+            return db.update_user_trade_percent(user_id, percent)
+        except Exception as e:
+            logger.error(f"set_user_trade_percent error: {e}")
+            return False
 
     # =========================================================================
     # 1. Analyze & Trade (manual, user-triggered)
     # =========================================================================
 
     def _get_chain_tools(self, chain: str = 'solana'):
-        """Return (wallet_manager, swap_fn, native_token, min_amount) — Solana only."""
+        """Return (wallet_manager, swap_fn, native_token, min_amount) â€” Solana only."""
         return self.wallet, swapper, WSOL_MINT, MIN_TRADE_SOL
 
     def _get_user_keypair(self, user_id: int):
@@ -201,7 +220,7 @@ class SmartTrader:
                 logger.warning(f"[SmartRiskGate] user={user_id} blocked: {reason}")
                 return result
 
-            # Token analysis — pass chain so EVM uses Honeypot.is instead of Solscan
+            # Token analysis â€” pass chain so EVM uses Honeypot.is instead of Solscan
             analysis = token_analyzer.analyze_token(token_address, chain=chain)
             result['risk_assessment'] = analysis
 
@@ -214,7 +233,7 @@ class SmartTrader:
                 result.update({'status': 'REJECTED', 'reason': analysis['trade_recommendation']})
                 await notification_engine.notify_user(
                     user_id,
-                    f"🚫 **Token Rejected**\n`{token_address[:12]}…`\n"
+                    f"ðŸš« **Token Rejected**\n`{token_address[:12]}â€¦`\n"
                     f"Reason: {analysis['trade_recommendation']}\n"
                     f"Risk: {analysis['risk_score']}/100"
                 )
@@ -231,7 +250,7 @@ class SmartTrader:
             )
             result['trade_amount_sol'] = trade_amount
 
-            # Get keypair — abort if unavailable
+            # Get keypair â€” abort if unavailable
             keypair = self._get_user_keypair(user_id)
             if keypair is None:
                 result.update({'status': 'ERROR', 'error': 'Could not load wallet keypair'})
@@ -242,7 +261,7 @@ class SmartTrader:
                 native_token, token_address, trade_amount, dex, keypair=keypair)
 
             if tx_result and tx_result.get('status') == 'confirmed':
-                received_amount = tx_result.get('expectedOutput', 0)
+                received_amount = tx_result.get('actualOutput', tx_result.get('expectedOutput', 0))
                 entry_price     = trade_amount / received_amount if received_amount else 0
                 result.update({'status': 'SUCCESS',
                                'tx_signature': tx_result.get('signature', '')})
@@ -258,20 +277,20 @@ class SmartTrader:
                 )
                 await notification_engine.notify_trade_opened(
                     user_id, pos_id,
-                    f"✅ **Smart Trade Executed**\n"
-                    f"Token: `{token_address[:12]}…`\n"
+                    f"âœ… **Smart Trade Executed**\n"
+                    f"Token: `{token_address[:12]}â€¦`\n"
                     f"Spent: {trade_amount:.4f} SOL\n"
                     f"Tokens: {received_amount:.2f}\n"
                     f"Momentum: {momentum}/100  |  Risk: {analysis['risk_score']:.0f}/100\n"
-                    f"TP ladder: +30% → +60% → +100%"
+                    f"TP ladder: +30% â†’ +60% â†’ +100%"
                 )
 
                 # Notify admins
                 from utils.notifications import notification_engine as _notif
                 await _notif.notify_admins(
-                    f"🤖 *Smart Trade Executed*\n"
+                    f"ðŸ¤– *Smart Trade Executed*\n"
                     f"User ID: `{user_id}`\n"
-                    f"Token: `{token_address[:12]}…`\n"
+                    f"Token: `{token_address[:12]}â€¦`\n"
                     f"Amount: `{trade_amount:.4f} SOL`\n"
                     f"Momentum: `{momentum}` | Risk: `{analysis['risk_score']:.0f}/100`"
                 )
@@ -346,7 +365,7 @@ class SmartTrader:
 
         async with aiohttp.ClientSession() as session:
 
-            # ── Source 1: DexScreener boosted tokens (actively promoted = high activity) ──
+            # â”€â”€ Source 1: DexScreener boosted tokens (actively promoted = high activity) â”€â”€
             try:
                 async with session.get(DEXSCREENER_BOOSTED, timeout=6) as resp:
                     if resp.status == 200:
@@ -355,7 +374,7 @@ class SmartTrader:
                         addrs = [i.get('tokenAddress', '') for i in items
                                  if i.get('chainId') == chain_id][:30]
                         if addrs:
-                            # Batch lookup — up to 30 addresses
+                            # Batch lookup â€” up to 30 addresses
                             addr_csv = ','.join(addrs)
                             async with session.get(
                                 f"https://api.dexscreener.com/latest/dex/tokens/{addr_csv}",
@@ -370,7 +389,7 @@ class SmartTrader:
             except Exception as e:
                 logger.warning(f"DexScreener boosted error: {e}")
 
-            # ── Source 2: DexScreener volume search — top pairs by 24h volume ──
+            # â”€â”€ Source 2: DexScreener volume search â€” top pairs by 24h volume â”€â”€
             try:
                 async with session.get(
                     DEXSCREENER_SEARCH,
@@ -392,7 +411,7 @@ class SmartTrader:
             except Exception as e:
                 logger.warning(f"DexScreener search error: {e}")
 
-        # ── Source 3: Birdeye trending (Solana only) ──────────────────────────
+        # â”€â”€ Source 3: Birdeye trending (Solana only) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if chain == 'solana':
             try:
                 async with aiohttp.ClientSession() as session:
@@ -486,8 +505,11 @@ class SmartTrader:
                                     'risk_label': risk_label,
                                     'dexscreener_url': f"https://dexscreener.com/solana/{token_data['address']}",
                                 }
-                                await tg_broadcaster.broadcast_token_launch(launch_data)
-                                logger.info(f"🎉 Broadcasted token launch: {token_data['name']}")
+                                posted = await tg_broadcaster.broadcast_token_launch(launch_data)
+                                if posted:
+                                    logger.info(f"Launch broadcasted: {token_data['name']}")
+                                else:
+                                    logger.info(f"Launch filtered: {token_data['name']}")
                             except Exception as e:
                                 logger.error(f"Failed to broadcast token launch: {e}")
 
@@ -510,7 +532,7 @@ class SmartTrader:
                                   trade_percent: float = 10.0):
         """
         Start the autonomous copy-trading loop for a user.
-        Each cycle: rank whales by win_rate × avg_profit → activate/pause accordingly.
+        Each cycle: rank whales by win_rate Ã— avg_profit â†’ activate/pause accordingly.
         """
         if self.is_auto_trading(user_id):
             logger.info(f"Auto-copy trading already running for user {user_id}")
@@ -521,16 +543,16 @@ class SmartTrader:
         )
         self._auto_copy_tasks[user_id] = task
         db.save_auto_trade_settings(user_id, True, trade_percent, max_trades_per_cycle)
-        logger.info(f"🤖 Auto-copy trading started for user {user_id}")
+        logger.info(f"ðŸ¤– Auto-copy trading started for user {user_id}")
 
         await notification_engine.notify_user(
             user_id,
-            f"🤖 **Auto-Trade Activated! (Solana)**\n\n"
+            f"ðŸ¤– **Auto-Trade Activated! (Solana)**\n\n"
             f"Monitoring watched whales and automatically following\n"
-            f"the best performers based on win rate × average profit.\n\n"
-            f"• Rankings re-run every 6 hours\n"
-            f"• Underperforming whales are paused automatically\n"
-            f"• New whales stay active until they build a track record\n\n"
+            f"the best performers based on win rate Ã— average profit.\n\n"
+            f"â€¢ Rankings re-run every 6 hours\n"
+            f"â€¢ Underperforming whales are paused automatically\n"
+            f"â€¢ New whales stay active until they build a track record\n\n"
             f"Add whale wallets via **Copy Trade** to get started.\n"
             f"Use **Stop Auto-Trade** to pause at any time."
         )
@@ -541,9 +563,9 @@ class SmartTrader:
         if task and not task.done():
             task.cancel()
         db.save_auto_trade_settings(user_id, False)
-        logger.info(f"🛑 Auto-copy trading stopped for user {user_id}")
+        logger.info(f"ðŸ›‘ Auto-copy trading stopped for user {user_id}")
 
-    # ── Auto Smart Trade ───────────────────────────────────────────────────────
+    # â”€â”€ Auto Smart Trade â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def is_auto_smart_trading(self, user_id: int) -> bool:
         task = self._auto_smart_tasks.get(user_id)
@@ -555,13 +577,13 @@ class SmartTrader:
         task = asyncio.create_task(self._auto_smart_loop(user_id, trade_percent, max_positions))
         self._auto_smart_tasks[user_id] = task
         db.save_auto_smart_settings(user_id, True, trade_percent, max_positions)
-        logger.info(f"🤖 Auto-Smart trading started for user {user_id}")
+        logger.info(f"ðŸ¤– Auto-Smart trading started for user {user_id}")
         await notification_engine.notify_user(
             user_id,
-            f"🤖 **Auto Smart Trade Activated!**\n\n"
+            f"ðŸ¤– **Auto Smart Trade Activated!**\n\n"
             f"Scanning DexScreener + Birdeye every 30 min.\n"
             f"Buying top momentum tokens with Kelly sizing.\n"
-            f"TP ladder: +30% → +60% → +100%\n"
+            f"TP ladder: +30% â†’ +60% â†’ +100%\n"
             f"Trailing stop after first TP, hard stop -20%.\n"
             f"Re-buys if token still shows strong momentum after exit.\n\n"
             f"Trade size: {trade_percent}% per position | Max positions: {max_positions}"
@@ -572,11 +594,11 @@ class SmartTrader:
         if task and not task.done():
             task.cancel()
         db.save_auto_smart_settings(user_id, False)
-        logger.info(f"🛑 Auto-Smart trading stopped for user {user_id}")
+        logger.info(f"ðŸ›‘ Auto-Smart trading stopped for user {user_id}")
 
     async def recover_auto_traders(self):
         """
-        Called once on bot startup — re-starts auto-trading for any users
+        Called once on bot startup â€” re-starts auto-trading for any users
         who had it enabled before the last restart.
         """
         # Recover auto-copy traders
@@ -588,9 +610,9 @@ class SmartTrader:
             if not self.is_auto_trading(uid):
                 task = asyncio.create_task(self._auto_copy_loop(uid, mtpc, pct))
                 self._auto_copy_tasks[uid] = task
-                logger.info(f"♻️  Auto-copy trading recovered for user {uid}")
+                logger.info(f"â™»ï¸  Auto-copy trading recovered for user {uid}")
         if active:
-            logger.info(f"♻️  Recovered auto-copy trading for {len(active)} user(s)")
+            logger.info(f"â™»ï¸  Recovered auto-copy trading for {len(active)} user(s)")
 
         # Recover auto-smart traders
         smart_active = db.get_active_auto_smart_traders()
@@ -601,9 +623,9 @@ class SmartTrader:
             if not self.is_auto_smart_trading(uid):
                 task = asyncio.create_task(self._auto_smart_loop(uid, pct, mpos))
                 self._auto_smart_tasks[uid] = task
-                logger.info(f"♻️  Auto-smart trading recovered for user {uid}")
+                logger.info(f"â™»ï¸  Auto-smart trading recovered for user {uid}")
         if smart_active:
-            logger.info(f"♻️  Recovered auto-smart trading for {len(smart_active)} user(s)")
+            logger.info(f"â™»ï¸  Recovered auto-smart trading for {len(smart_active)} user(s)")
 
     async def _auto_copy_loop(self, user_id: int,
                                 max_trades: int, trade_percent: float):
@@ -611,7 +633,7 @@ class SmartTrader:
         Whale-driven auto-copy loop.
 
         Each cycle:
-          1. Rank all watched whales by (win_rate × avg_profit) over last 30 days.
+          1. Rank all watched whales by (win_rate Ã— avg_profit) over last 30 days.
           2. Activate copy-monitoring for top performers; pause underperformers.
           3. If a user has no trade history yet (new whales), keep all active.
           4. Every WHALE_RANK_INTERVAL seconds re-rank and rebalance.
@@ -637,15 +659,15 @@ class SmartTrader:
 
                 uid = user['user_id']
 
-                # ── 1. Rank watched whales ────────────────────────────────────
+                # â”€â”€ 1. Rank watched whales â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                 rankings = db.get_whale_rankings(
                     user_id, min_trades=MIN_TRADES_TO_RANK, lookback_days=SMART_WHALE_LOOKBACK_DAYS
                 )
                 all_watched = db.get_watched_wallets(user_id)
 
-                # Whales with enough history → rank them
+                # Whales with enough history â†’ rank them
                 ranked_addrs  = {r['watched_wallet'] for r in rankings}
-                # Whales without enough history → keep active (trial period)
+                # Whales without enough history â†’ keep active (trial period)
                 unranked      = [w for w in all_watched
                                  if w['wallet_address'] not in ranked_addrs]
 
@@ -658,7 +680,7 @@ class SmartTrader:
                 under_addrs   = {r['watched_wallet'] for r in rankings
                                  if r['score'] < MIN_ACTIVE_SCORE}
 
-                # ── 2. Activate / pause accordingly ──────────────────────────
+                # â”€â”€ 2. Activate / pause accordingly â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                 activated, paused = 0, 0
                 for whale in all_watched:
                     addr    = whale['wallet_address']
@@ -671,11 +693,11 @@ class SmartTrader:
                         # Pause underperformer
                         db.pause_watched_wallet(
                             whale['id'],
-                            f"[AutoRank] score below {MIN_ACTIVE_SCORE:.1f} — paused"
+                            f"[AutoRank] score below {MIN_ACTIVE_SCORE:.1f} â€” paused"
                         )
                         engine.stop_monitoring_for_user(user_id)
                         paused += 1
-                        logger.info(f"[AutoRank] ⏸ Paused underperformer {addr[:12]}… ({chain})")
+                        logger.info(f"[AutoRank] â¸ Paused underperformer {addr[:12]}â€¦ ({chain})")
 
                     elif (addr in top_addrs or addr in {w['wallet_address'] for w in unranked}):
                         if whale.get('is_paused'):
@@ -684,23 +706,23 @@ class SmartTrader:
                         await engine.start_monitoring_for_user(user_id)
                         activated += 1
 
-                # ── 3. Notify user of ranking results ─────────────────────────
+                # â”€â”€ 3. Notify user of ranking results â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                 if rankings:
-                    lines = ["🐋 **Auto-Trade: Whale Rankings Updated**\n"]
+                    lines = ["ðŸ‹ **Auto-Trade: Whale Rankings Updated**\n"]
                     for i, r in enumerate(rankings[:5], 1):
-                        status = "✅" if r['watched_wallet'] in top_addrs else "⏸"
+                        status = "âœ…" if r['watched_wallet'] in top_addrs else "â¸"
                         lines.append(
-                            f"{status} #{i} `{r['watched_wallet'][:14]}…` [{r['chain'].upper()}]\n"
+                            f"{status} #{i} `{r['watched_wallet'][:14]}â€¦` [{r['chain'].upper()}]\n"
                             f"   Win: {r['win_rate']*100:.0f}%  Avg: {r['avg_profit']:+.1f}%  "
                             f"Trades: {r['total_trades']}"
                         )
                     if unranked:
-                        lines.append(f"\n🆕 {len(unranked)} new whale(s) on trial (not enough history yet)")
+                        lines.append(f"\nðŸ†• {len(unranked)} new whale(s) on trial (not enough history yet)")
                     if paused:
-                        lines.append(f"⏸ {paused} whale(s) paused — poor performance")
+                        lines.append(f"â¸ {paused} whale(s) paused â€” poor performance")
                     await notification_engine.notify_user(user_id, "\n".join(lines))
                 else:
-                    # No history yet — just make sure all watched wallets are monitored
+                    # No history yet â€” just make sure all watched wallets are monitored
                     for whale in all_watched:
                         chain  = whale.get('chain', 'solana')
                         engine = _CHAIN_ENGINE.get(chain)
@@ -709,20 +731,20 @@ class SmartTrader:
                     if all_watched:
                         await notification_engine.notify_user(
                             user_id,
-                            f"🐋 **Auto-Trade Active**\n\n"
-                            f"Monitoring {len(all_watched)} whale(s) — building performance history.\n"
+                            f"ðŸ‹ **Auto-Trade Active**\n\n"
+                            f"Monitoring {len(all_watched)} whale(s) â€” building performance history.\n"
                             f"Rankings will appear after each whale has {MIN_TRADES_TO_RANK}+ closed trades."
                         )
                     else:
                         await notification_engine.notify_user(
                             user_id,
-                            "🐋 **Auto-Trade Active**\n\n"
+                            "ðŸ‹ **Auto-Trade Active**\n\n"
                             "No whale wallets found. Add whales via **Copy Trade** and auto-trade\n"
                             "will automatically follow the best performers."
                         )
 
                 logger.info(
-                    f"[AutoRank] cycle done for user {user_id} — "
+                    f"[AutoRank] cycle done for user {user_id} â€” "
                     f"active={len(top_addrs)+len(unranked)} paused={paused} "
                     f"next rerank in {WHALE_RANK_INTERVAL//3600}h"
                 )
@@ -781,7 +803,7 @@ class SmartTrader:
                         if result.get('status') == 'SUCCESS':
                             bought += 1
                             open_tokens.add(addr)
-                            logger.info(f"[AutoSmart] Bought {addr[:10]}… ({bought}/{slots} slots)")
+                            logger.info(f"[AutoSmart] Bought {addr[:10]}â€¦ ({bought}/{slots} slots)")
 
                 consecutive_errors = 0
                 await asyncio.sleep(SCAN_INTERVAL)
@@ -817,7 +839,7 @@ class SmartTrader:
         open_tokens = {p['token_address'] for p in open_pos.get('smart', [])}
         blacklist   = self._get_blacklist(user_id)
 
-        # Discovery — already async, cap at 8 s total
+        # Discovery â€” already async, cap at 8 s total
         try:
             candidates = await asyncio.wait_for(
                 self.discover_trending_tokens(chain, limit=15), timeout=6
@@ -845,7 +867,7 @@ class SmartTrader:
                 pre.append({**tok, 'momentum_score': momentum})
 
         pre.sort(key=lambda x: x['momentum_score'], reverse=True)
-        # Only safety-check the top 8 — avoids hitting 20+ APIs sequentially
+        # Only safety-check the top 8 â€” avoids hitting 20+ APIs sequentially
         to_check = pre[:8]
 
         def _safe_check(tok):
@@ -922,7 +944,7 @@ class SmartTrader:
         db.remove_from_token_list(user_id, 'blacklist', token_address)
 
     # =========================================================================
-    # 6. Position monitoring — graduated TP ladder
+    # 6. Position monitoring â€” graduated TP ladder
     # =========================================================================
 
     def _get_user_smart_settings(self, user_id: int) -> dict:
@@ -973,7 +995,7 @@ class SmartTrader:
         user_trade_percent = 5.0  # used for rebuy sizing
 
         logger.info(
-            f"📊 [Graduated] monitoring {token_address[:10]}…  "
+            f"ðŸ“Š [Graduated] monitoring {token_address[:10]}â€¦  "
             f"entry={entry_price:.8f}  amount={token_amount:.4f}  "
             f"stop={hard_stop*100:.0f}%  trail={trail_pct*100:.0f}%  "
             f"TP={tp_ladder[0][0]*100:.0f}/{tp_ladder[1][0]*100:.0f}/{tp_ladder[2][0]*100:.0f}%"
@@ -1004,11 +1026,11 @@ class SmartTrader:
 
                 # Hard stop (user-configured)
                 if pnl_pct <= hard_stop:
-                    logger.info(f"🛑 Stop-loss {pnl_pct*100:.1f}% — exiting {token_address[:10]}")
+                    logger.info(f"ðŸ›‘ Stop-loss {pnl_pct*100:.1f}% â€” exiting {token_address[:10]}")
                     await self._exit_smart_position(user_id, token_address, remaining, 'stop_loss')
                     await notification_engine.notify_user(
                         user_id,
-                        f"🛑 **Stop-Loss Hit**\n`{token_address[:12]}…`\n"
+                        f"ðŸ›‘ **Stop-Loss Hit**\n`{token_address[:12]}â€¦`\n"
                         f"Loss: {pnl_pct*100:.1f}%  (limit: {hard_stop*100:.0f}%)"
                     )
                     if auto_rebuy:
@@ -1023,7 +1045,7 @@ class SmartTrader:
                         next_remaining = remaining - sell_qty
                         tp_idx        += 1
                         logger.info(
-                            f"💰 TP level {tp_idx}: sell {sell_frac*100:.0f}% "
+                            f"ðŸ’° TP level {tp_idx}: sell {sell_frac*100:.0f}% "
                             f"at +{pnl_pct*100:.1f}%  remaining={next_remaining:.4f}"
                         )
                         confirmed = await self._partial_exit_smart(
@@ -1033,8 +1055,8 @@ class SmartTrader:
                             remaining = next_remaining
                             await notification_engine.notify_user(
                                 user_id,
-                                f"💰 **Take-Profit Level {tp_idx}!**\n"
-                                f"`{token_address[:12]}…`\n"
+                                f"ðŸ’° **Take-Profit Level {tp_idx}!**\n"
+                                f"`{token_address[:12]}â€¦`\n"
                                 f"Profit: +{pnl_pct*100:.1f}%  |  Sold {sell_frac*100:.0f}%\n"
                                 f"Still holding {remaining:.2f} tokens"
                             )
@@ -1047,15 +1069,15 @@ class SmartTrader:
                 if tp_idx >= 1:
                     trailing_active = True
 
-                # Trailing stop — exit remaining if price drops trail_pct from peak
+                # Trailing stop â€” exit remaining if price drops trail_pct from peak
                 if trailing_active and peak_price > 0:
                     drawdown = (peak_price - current_price) / peak_price
                     if drawdown >= trail_pct:
-                        logger.info(f"📉 [Smart] Trailing stop {drawdown*100:.1f}% from peak — exiting {token_address[:10]}")
+                        logger.info(f"ðŸ“‰ [Smart] Trailing stop {drawdown*100:.1f}% from peak â€” exiting {token_address[:10]}")
                         await self._exit_smart_position(user_id, token_address, remaining, 'trailing_stop')
                         await notification_engine.notify_user(
                             user_id,
-                            f"📉 **Trailing Stop Hit**\n`{token_address[:12]}…`\n"
+                            f"ðŸ“‰ **Trailing Stop Hit**\n`{token_address[:12]}â€¦`\n"
                             f"Dropped {drawdown*100:.1f}% from peak\n"
                             f"PnL: {pnl_pct*100:+.1f}%"
                         )
@@ -1080,13 +1102,13 @@ class SmartTrader:
                 token_address, WSOL_MINT, sell_qty, 'jupiter', keypair=keypair
             )
             if not sell_result or sell_result.get('status') != 'confirmed':
-                logger.warning(f"[Smart] Partial exit swap not confirmed — DB not updated")
+                logger.warning(f"[Smart] Partial exit swap not confirmed â€” DB not updated")
                 return False
-            sol_received = sell_result.get('expectedOutput', 0)
+            sol_received = sell_result.get('actualOutput', sell_result.get('expectedOutput', 0))
             # Update remaining amount in DB only after confirmed swap
             db.update_pending_trade_token_amount(user_id, token_address, remaining)
             logger.info(
-                f"[Smart] Partial exit: {sell_qty:.4f} tokens → {sol_received:.4f} SOL  "
+                f"[Smart] Partial exit: {sell_qty:.4f} tokens â†’ {sol_received:.4f} SOL  "
                 f"sig={sell_result.get('signature','n/a')[:20]}"
             )
             return True
@@ -1106,7 +1128,7 @@ class SmartTrader:
             if not sell_result or sell_result.get('status') != 'confirmed':
                 logger.error(f"[Smart] Full exit swap failed [{reason}]")
                 return
-            sol_received = sell_result.get('expectedOutput', 0)
+            sol_received = sell_result.get('actualOutput', sell_result.get('expectedOutput', 0))
             tx_sig       = sell_result.get('signature', 'n/a')
             db.update_pending_trade_closed(user_id, token_address, sol_received, tx_sig)
             if open_trade and open_trade.get('sol_spent'):
@@ -1115,7 +1137,7 @@ class SmartTrader:
                 enhanced_features.record_daily_loss(user_id, profit_pct)
                 enhanced_features.record_trade_result(user_id, profit_pct > 0)
             logger.info(
-                f"[Smart] Full exit [{reason}]: {amount:.4f} tokens → {sol_received:.4f} SOL  "
+                f"[Smart] Full exit [{reason}]: {amount:.4f} tokens â†’ {sol_received:.4f} SOL  "
                 f"sig={tx_sig[:20]}"
             )
         except Exception as e:
@@ -1137,7 +1159,7 @@ class SmartTrader:
 
             momentum = await self._score_momentum(token_address)
             if momentum < SMART_REBUY_MIN_MOMENTUM:
-                logger.info(f"[Rebuy] {token_address[:10]} momentum {momentum} < {SMART_REBUY_MIN_MOMENTUM} — skip")
+                logger.info(f"[Rebuy] {token_address[:10]} momentum {momentum} < {SMART_REBUY_MIN_MOMENTUM} â€” skip")
                 return
 
             analysis = await asyncio.to_thread(
@@ -1146,13 +1168,13 @@ class SmartTrader:
             risk = analysis.get('risk_score', 100)
             rec = analysis.get('trade_recommendation', '')
             if risk > SMART_REBUY_MAX_RISK or rec in ('REJECT_HONEYPOT', 'REJECT_CONCENTRATED', 'REJECT_TOO_RISKY', 'REJECT_ANALYSIS_ERROR'):
-                logger.info(f"[Rebuy] {token_address[:10]} risk {risk} too high — skip")
+                logger.info(f"[Rebuy] {token_address[:10]} risk {risk} too high â€” skip")
                 return
 
-            logger.info(f"[Rebuy] {token_address[:10]} still shows promise (momentum={momentum}, risk={risk}) — re-entering")
+            logger.info(f"[Rebuy] {token_address[:10]} still shows promise (momentum={momentum}, risk={risk}) â€” re-entering")
             await notification_engine.notify_user(
                 user_id,
-                f"🔄 **Re-entry Signal**\n`{token_address[:12]}…`\n"
+                f"ðŸ”„ **Re-entry Signal**\n`{token_address[:12]}â€¦`\n"
                 f"Momentum: {momentum}/100  |  Risk: {risk}/100\n"
                 f"Re-buying after position closed."
             )
@@ -1165,7 +1187,7 @@ class SmartTrader:
             logger.error(f"[Rebuy] error for {token_address[:10]}: {e}")
 
     # =========================================================================
-    # 7. Sizing — Kelly Criterion
+    # 7. Sizing â€” Kelly Criterion
     # =========================================================================
 
     def _get_historical_stats(self, user_id: int) -> tuple:
@@ -1253,7 +1275,7 @@ class SmartTrader:
 
     def _quick_momentum_score(self, tok: Dict) -> int:
         """
-        0–100 score based on multi-timeframe price data, volume, liquidity, and token age.
+        0â€“100 score based on multi-timeframe price data, volume, liquidity, and token age.
         Used for pre-filter before expensive on-chain analysis.
         """
         score = 50
@@ -1264,16 +1286,16 @@ class SmartTrader:
         liquidity   = float(tok.get('liquidity_usd', 0) or 0)
         age_hours   = float(tok.get('age_hours', 999) or 999)  # default old = safe
 
-        # Token age penalty — very new tokens are higher risk
+        # Token age penalty â€” very new tokens are higher risk
         if 0 < age_hours < 6:
-            score -= 20   # less than 6h old — very risky
+            score -= 20   # less than 6h old â€” very risky
         elif 6 <= age_hours < 24:
             score -= 10   # less than 1 day
         # birdeye_new/pump.fun exception: they graduate fast, age < 24h is normal
         if tok.get('source') in ('pump.fun', 'birdeye_new'):
             score += 10   # new listing discovery bonus (offset age penalty)
 
-        # Multi-timeframe momentum — weight recent moves more heavily
+        # Multi-timeframe momentum â€” weight recent moves more heavily
         if change_1h > 20:    score += 20
         elif change_1h > 10:  score += 15
         elif change_1h > 5:   score += 10
@@ -1307,7 +1329,7 @@ class SmartTrader:
         score = 50
         try:
             async with aiohttp.ClientSession() as session:
-                # ── DexScreener: multi-timeframe price data ──
+                # â”€â”€ DexScreener: multi-timeframe price data â”€â”€
                 url = f"https://api.dexscreener.com/latest/dex/tokens/{token_address}"
                 async with session.get(url, timeout=8) as resp:
                     if resp.status == 200:
@@ -1327,7 +1349,7 @@ class SmartTrader:
                                 'age_hours':        age_hours,
                             })
 
-                # ── Birdeye: buy/sell pressure (trade count ratio) ──
+                # â”€â”€ Birdeye: buy/sell pressure (trade count ratio) â”€â”€
                 if BIRDEYE_API_KEY:
                     try:
                         async with session.get(
@@ -1366,7 +1388,7 @@ class SmartTrader:
             logger.error(f"Price fetch error: {e}")
         return None
 
-    # ── Legacy compat (used by position monitor in old flow) ──────────────────
+    # â”€â”€ Legacy compat (used by position monitor in old flow) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     async def monitor_position_for_profit(self, user_id, token_address,
                                            entry_tx, profit_target=0.30):
         """Redirect to graduated monitor (backwards compat)."""
@@ -1380,3 +1402,4 @@ class SmartTrader:
 
 # Singleton
 smart_trader = SmartTrader()
+

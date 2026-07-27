@@ -69,6 +69,7 @@ class TelegramBroadcaster:
         self._launch_update_interval = int(os.getenv('BROADCAST_LAUNCH_UPDATE_INTERVAL_MINUTES', '20')) * 60
         self._launch_max_age_minutes = int(os.getenv('BROADCAST_LAUNCH_MAX_AGE_MINUTES', '180'))
         self._launch_min_liquidity_usd = float(os.getenv('BROADCAST_LAUNCH_MIN_LIQUIDITY_USD', '10000'))
+        self._launch_min_solidity_score = float(os.getenv('BROADCAST_LAUNCH_MIN_SOLIDITY_SCORE', '6.5'))
         self._launch_scan_limit = int(os.getenv('BROADCAST_LAUNCH_SCAN_LIMIT', '15'))
         self._max_token_keywords = int(os.getenv('BROADCAST_MAX_TOKEN_NEWS_KEYWORDS', '80'))
         self._posted_launches: Dict[str, float] = {}
@@ -268,8 +269,7 @@ class TelegramBroadcaster:
 <b>Confidence:</b> {emoji} {confidence}
 
 ━━━━━━━━━━━━━━━━━━
-<i>Not financial advice. DYOR.</i>
-<a href="https://t.me/Kopytraderbot">Bad a sol trading @Kopytraderbot got you covered win rate is 87%</a>
+<a href=\"https://t.me/Kopytraderbot\">Bad @ trading meme tokens, @Kopytraderbot got you covered win rate is 87% Try with 1 $ol on any meme token</a>
 """
 
         return await self._send_message(message)
@@ -317,8 +317,7 @@ class TelegramBroadcaster:
 <b>Tx:</b> {solscan_url}
 
 ━━━━━━━━━━━━━━━━━━
-<i>Not financial advice. DYOR.</i>
-<a href="https://t.me/Kopytraderbot">Bad a sol trading @Kopytraderbot got you covered win rate is 87%</a>
+<a href=\"https://t.me/Kopytraderbot\">Bad @ trading meme tokens, @Kopytraderbot got you covered win rate is 87% Try with 1 $ol on any meme token</a>
 """
 
         return await self._send_message(message)
@@ -342,18 +341,50 @@ class TelegramBroadcaster:
         if not self.bot:
             return False
 
-        risk_emoji = {'DEGEN': '⚠️', 'OKAY': '✅', 'RUG_RISK': '🚨'}
+        contract_address = str(launch_data.get('contract_address', '') or '').strip()
+        if not contract_address:
+            return False
+
+        risk_score = launch_data.get('risk_score')
+        solidity_score = launch_data.get('solidity_score')
+        recommendation = launch_data.get('trade_recommendation')
+        if solidity_score is None:
+            analysis = await self._analyze_launch_candidate(contract_address)
+            if analysis:
+                risk_score = analysis.get('risk_score', risk_score)
+                solidity_score = analysis.get('solidity_score', solidity_score)
+                recommendation = analysis.get('trade_recommendation', recommendation)
+
+        if solidity_score is None:
+            logger.debug('Skipping launch %s: no solidity score available', contract_address[:12])
+            return False
+
+        if float(solidity_score) < self._launch_min_solidity_score:
+            logger.info(
+                'Skipping launch %s: solidity %.1f < %.1f',
+                contract_address[:12],
+                float(solidity_score),
+                self._launch_min_solidity_score,
+            )
+            return False
+
+        if recommendation in ('REJECT_HONEYPOT', 'REJECT_CONCENTRATED', 'REJECT_TOO_RISKY', 'REJECT_ANALYSIS_ERROR'):
+            logger.info('Skipping launch %s: recommendation=%s', contract_address[:12], recommendation)
+            return False
+
+        risk_emoji = {'DEGEN': '??', 'OKAY': '?', 'RUG_RISK': '??'}
         risk = str(launch_data.get('risk_label', 'DEGEN'))
-        emoji = risk_emoji.get(risk, '⚠️')
+        emoji = risk_emoji.get(risk, '??')
         token_name = self._safe_text(launch_data.get('token_name', 'Unknown Token'))
         symbol = self._safe_text(launch_data.get('symbol', '?'))
-        contract_address = self._safe_text(launch_data.get('contract_address', 'N/A'))
         platform = self._safe_text(launch_data.get('platform', 'N/A'))
         dexscreener_url = self._safe_text(launch_data.get('dexscreener_url', 'N/A'))
         risk_label = self._safe_text(risk.replace('_', ' '))
+        solidity_display = float(solidity_score)
+        risk_display = float(risk_score) if risk_score is not None else 0.0
 
         message = f"""
-<b>🎉 TOKEN LAUNCH ALERT</b>
+<b>?? TOKEN LAUNCH ALERT</b>
 
 <b>Token:</b> {token_name} (${symbol})
 <b>CA:</b> <code>{contract_address}</code>
@@ -361,16 +392,31 @@ class TelegramBroadcaster:
 <b>Platform:</b> {platform}
 <b>Starting Liquidity:</b> ${float(launch_data.get('liquidity_usd', 0) or 0):,.2f}
 <b>Pool Age:</b> {float(launch_data.get('age_minutes', 0) or 0):.0f} minutes
+<b>Solidity:</b> {solidity_display:.1f}/10
+<b>Risk:</b> {risk_display:.0f}/100
 
 <b>Risk Label:</b> {emoji} {risk_label}
 
 <b>DexScreener:</b> {dexscreener_url}
 
-━━━━━━━━━━━━━━━━━━
+??????????????????
 <i>.</i>
 """
 
         return await self._send_message(message)
+
+    async def _analyze_launch_candidate(self, contract_address: str) -> Optional[Dict]:
+        """Analyze a launch token and convert risk to a 0-10 solidity score."""
+        try:
+            from trading.token_analyzer import token_analyzer
+            analysis = await asyncio.to_thread(token_analyzer.analyze_token, contract_address)
+            risk_score = float(analysis.get('risk_score', 100) or 100)
+            solidity_score = max(0.0, min(10.0, 10.0 - (risk_score / 10.0)))
+            analysis['solidity_score'] = solidity_score
+            return analysis
+        except Exception as e:
+            logger.debug('Launch analysis failed for %s: %s', contract_address[:12], e)
+            return None
 
     async def broadcast_news(self, news_data: Dict) -> bool:
         """
@@ -416,8 +462,7 @@ class TelegramBroadcaster:
 {published_line}<b>Relevance:</b> {relevance:.1f}/100
 
 ━━━━━━━━━━━━━━━━━━━━
-<i>Not financial advice. DYOR.</i>
-<a href="https://t.me/Kopytraderbot">Bad a sol trading @Kopytraderbot got you covered win rate is 87%</a>
+<a href=\"https://t.me/Kopytraderbot\">Bad @ trading meme tokens, @Kopytraderbot got you covered win rate is 87% Try with 1 $ol on any meme token</a>
 """
 
         return await self._send_message(message)
@@ -531,7 +576,7 @@ class TelegramBroadcaster:
                 + "<b>🏆 TOP TOKEN PERFORMANCE (24H)</b>\n"
                 + "\n".join(top_lines)
                 + f"\n\n<i>Updated: {now_utc}</i>\n"
-                + "<a href=\"https://t.me/Kopytraderbot\">Bad a sol trading @Kopytraderbot got you covered win rate is 87%</a>"
+                + "<a href=\"https://t.me/Kopytraderbot\">Bad @ trading meme tokens, @Kopytraderbot got you covered win rate is 87% Try with 1 $ol on any meme token</a>"
             )
 
             return await self._send_message(message)

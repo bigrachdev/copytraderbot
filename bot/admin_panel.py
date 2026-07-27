@@ -516,6 +516,13 @@ class AdminPanel:
                 'total_vanity_wallets': 0,
                 'active_risk_orders': 0,
                 'copy_trading_targets': 0,
+                'total_volume_sol': 0,
+                'copy_profit_sol': 0,
+                'smart_profit_sol': 0,
+                'open_copy_positions': 0,
+                'open_smart_trades': 0,
+                'closed_smart_trades': 0,
+                'active_users_7d': 0,
                 'timestamp': datetime.now().isoformat()
             }
 
@@ -530,11 +537,26 @@ class AdminPanel:
                 cursor.execute("SELECT COUNT(*) FROM trades")
                 stats['total_trades'] = cursor.fetchone()[0] or 0
 
+                cursor.execute("SELECT COALESCE(SUM(input_amount), 0) FROM trades")
+                stats['total_volume_sol'] = cursor.fetchone()[0] or 0
+
                 cursor.execute("SELECT COUNT(*) FROM trades WHERE is_copy = TRUE")
                 stats['total_copy_trades'] = cursor.fetchone()[0] or 0
 
+                cursor.execute("SELECT COALESCE(SUM(sol_received - sol_spent), 0) FROM copy_performance WHERE status = 'closed'")
+                stats['copy_profit_sol'] = cursor.fetchone()[0] or 0
+
+                cursor.execute("SELECT COUNT(*) FROM copy_performance WHERE status = 'open'")
+                stats['open_copy_positions'] = cursor.fetchone()[0] or 0
+
                 cursor.execute("SELECT COUNT(*) FROM smart_trades")
                 stats['total_smart_trades'] = cursor.fetchone()[0] or 0
+
+                cursor.execute("SELECT COUNT(*) FROM smart_trades WHERE is_closed = TRUE")
+                stats['closed_smart_trades'] = cursor.fetchone()[0] or 0
+
+                cursor.execute("SELECT COUNT(*) FROM smart_trades WHERE is_closed = FALSE")
+                stats['open_smart_trades'] = cursor.fetchone()[0] or 0
 
                 # Calculate total profit from closed smart trades
                 cursor.execute("""
@@ -546,7 +568,8 @@ class AdminPanel:
                         END
                     ), 0) FROM smart_trades
                 """)
-                stats['total_profit_sol'] = cursor.fetchone()[0] or 0
+                stats['smart_profit_sol'] = cursor.fetchone()[0] or 0
+                stats['total_profit_sol'] = stats['copy_profit_sol'] + stats['smart_profit_sol']
 
                 cursor.execute("SELECT COUNT(*) FROM vanity_wallets")
                 stats['total_vanity_wallets'] = cursor.fetchone()[0] or 0
@@ -556,6 +579,9 @@ class AdminPanel:
 
                 cursor.execute("SELECT COUNT(*) FROM watched_wallets WHERE is_active = TRUE")
                 stats['copy_trading_targets'] = cursor.fetchone()[0] or 0
+
+                cursor.execute("SELECT COUNT(*) FROM users WHERE last_active >= CURRENT_TIMESTAMP - INTERVAL '7 days'")
+                stats['active_users_7d'] = cursor.fetchone()[0] or 0
 
             except psycopg.Error:
                 # Fallback for SQLite
@@ -570,11 +596,26 @@ class AdminPanel:
                 cursor.execute("SELECT COUNT(*) FROM trades")
                 stats['total_trades'] = cursor.fetchone()[0] or 0
 
-                cursor.execute("SELECT COUNT(*) FROM trades WHERE is_copy = 0")
+                cursor.execute("SELECT COALESCE(SUM(input_amount), 0) FROM trades")
+                stats['total_volume_sol'] = cursor.fetchone()[0] or 0
+
+                cursor.execute("SELECT COUNT(*) FROM trades WHERE is_copy = 1")
                 stats['total_copy_trades'] = cursor.fetchone()[0] or 0
+
+                cursor.execute("SELECT COALESCE(SUM(sol_received - sol_spent), 0) FROM copy_performance WHERE status = 'closed'")
+                stats['copy_profit_sol'] = cursor.fetchone()[0] or 0
+
+                cursor.execute("SELECT COUNT(*) FROM copy_performance WHERE status = 'open'")
+                stats['open_copy_positions'] = cursor.fetchone()[0] or 0
 
                 cursor.execute("SELECT COUNT(*) FROM smart_trades")
                 stats['total_smart_trades'] = cursor.fetchone()[0] or 0
+
+                cursor.execute("SELECT COUNT(*) FROM smart_trades WHERE is_closed = 1")
+                stats['closed_smart_trades'] = cursor.fetchone()[0] or 0
+
+                cursor.execute("SELECT COUNT(*) FROM smart_trades WHERE is_closed = 0")
+                stats['open_smart_trades'] = cursor.fetchone()[0] or 0
 
                 cursor.execute("""
                     SELECT COALESCE(SUM(
@@ -585,7 +626,8 @@ class AdminPanel:
                         END
                     ), 0) FROM smart_trades
                 """)
-                stats['total_profit_sol'] = cursor.fetchone()[0] or 0
+                stats['smart_profit_sol'] = cursor.fetchone()[0] or 0
+                stats['total_profit_sol'] = stats['copy_profit_sol'] + stats['smart_profit_sol']
 
                 cursor.execute("SELECT COUNT(*) FROM vanity_wallets")
                 stats['total_vanity_wallets'] = cursor.fetchone()[0] or 0
@@ -595,6 +637,9 @@ class AdminPanel:
 
                 cursor.execute("SELECT COUNT(*) FROM watched_wallets WHERE is_active = 1")
                 stats['copy_trading_targets'] = cursor.fetchone()[0] or 0
+
+                cursor.execute("SELECT COUNT(*) FROM users WHERE last_active >= datetime('now', '-7 days')")
+                stats['active_users_7d'] = cursor.fetchone()[0] or 0
 
             conn.close()
             
@@ -628,10 +673,17 @@ class AdminPanel:
                 f"  • Total Users: {stats['total_users']}\n"
                 f"  • Total Admins: {stats['total_admins']}\n"
                 f"  • Active Users: {len([u for u in users if u])}\n\n"
+                f"  - Active Users (7d): {stats.get('active_users_7d', 0)}\n"
                 f"**Trading Statistics:**\n"
                 f"  • Total Trades: {stats['total_trades']}\n"
                 f"  • Copy Trades: {stats.get('total_copy_trades', 0)}\n"
+                f"  - Trade Volume: {stats.get('total_volume_sol', 0):.4f} SOL\n"
+                f"  - Copy Profit: {stats.get('copy_profit_sol', 0):.4f} SOL\n"
+                f"  - Open Copy Positions: {stats.get('open_copy_positions', 0)}\n"
                 f"  • Smart Trades: {stats.get('total_smart_trades', 0)}\n"
+                f"  - Open Smart Trades: {stats.get('open_smart_trades', 0)}\n"
+                f"  - Closed Smart Trades: {stats.get('closed_smart_trades', 0)}\n"
+                f"  - Smart Profit: {stats.get('smart_profit_sol', 0):.4f} SOL\n"
                 f"  • Total Profit: {stats['total_profit_sol']:.4f} SOL\n"
                 f"  • Avg Profit/Trade: {stats['total_profit_sol'] / max(stats['total_trades'], 1):.4f} SOL\n\n"
                 f"**Feature Usage:**\n"

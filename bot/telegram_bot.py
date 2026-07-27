@@ -366,7 +366,15 @@ class TelegramBot:
         try:
             public_key, secret_key = self.wallet_manager.generate_keypair()
             encrypted_key = encrypt_private_key(secret_key)
-            db.add_user(user_id, public_key, encrypted_key, public_key)
+            created = db.add_user(user_id, public_key, encrypted_key, public_key)
+
+            if created:
+                await notification_engine.notify_admins(
+                    f"👤 **New user registered**\n"
+                    f"User: `{user_id}`\n"
+                    f"Wallet: `{public_key}`\n"
+                    f"Type: `new wallet created`"
+                )
 
             await query.edit_message_text(
                 "✅ **Solana Wallet Created!**\n\n"
@@ -416,7 +424,14 @@ class TelegramBot:
         encrypted_key = encrypt_private_key(private_key)
         
         # Save to database
-        db.add_user(user_id, public_key, encrypted_key, public_key)
+        created = db.add_user(user_id, public_key, encrypted_key, public_key)
+        if created:
+            await notification_engine.notify_admins(
+                f"👤 **New user registered**\n"
+                f"User: `{user_id}`\n"
+                f"Wallet: `{public_key}`\n"
+                f"Type: `imported wallet`"
+            )
         
         await update.message.reply_text(
             f"✅ Wallet imported successfully!\n\n"
@@ -3143,6 +3158,13 @@ class TelegramBot:
         await update.callback_query.edit_message_text(
             f"🐋 **Copy Trade Stats**\n\n"
             f"Total Copy Trades: {copy_trades}\n"
+                f"  - Trade Volume: {stats.get('total_volume_sol', 0):.4f} SOL\n"
+                f"  - Open Copy Positions: {stats.get('open_copy_positions', 0)}\n"
+                f"  - Smart Trades: {smart_trades}\n"
+                f"  - Open Smart Trades: {stats.get('open_smart_trades', 0)}\n"
+                f"  - Closed Smart Trades: {stats.get('closed_smart_trades', 0)}\n"
+                f"  - Copy Profit: {stats.get('copy_profit_sol', 0):.4f} SOL\n"
+                f"  - Smart Profit: {stats.get('smart_profit_sol', 0):.4f} SOL\n"
             f"Closed Positions: {len(closed)}\n"
             f"Win Rate: {win_rate:.1f}%\n"
             f"Avg Profit: {avg_profit:.1f}%\n"
@@ -3779,7 +3801,10 @@ class TelegramBot:
             f"  👨‍💼 Admins: {stats.get('total_admins', 0)}\n"
             f"  🔄 Total Trades: {stats.get('total_trades', 0)}\n"
             f"  🐋 Copy Trades: {stats.get('total_copy_trades', 0)}\n"
-            f"  🧠 Smart Trades: {stats.get('total_smart_trades', 0)}\n"
+            f"  - Trade Volume: {stats.get('total_volume_sol', 0):.4f} SOL\n"
+            f"  - Open Copy Positions: {stats.get('open_copy_positions', 0)}\n"
+            f"  - Open Smart Trades: {stats.get('open_smart_trades', 0)}\n"
+            f"  - Closed Smart Trades: {stats.get('closed_smart_trades', 0)}\n"
             f"  💰 Total Profit: {stats.get('total_profit_sol', 0):.4f} SOL\n"
             f"  🎯 Risk Orders: {stats.get('active_risk_orders', 0)}\n"
             f"  🐋 Copy Targets: {stats.get('copy_trading_targets', 0)}\n"
@@ -3903,7 +3928,12 @@ class TelegramBot:
                 f"**Trading Activity:**\n"
                 f"  🔄 Total Trades: {total_trades}\n"
                 f"  🐋 Copy Trades: {copy_trades}\n"
-                f"  🧠 Smart Trades: {smart_trades}\n"
+                f"  - Trade Volume: {stats.get('total_volume_sol', 0):.4f} SOL\n"
+                f"  - Open Copy Positions: {stats.get('open_copy_positions', 0)}\n"
+                f"  - Open Smart Trades: {stats.get('open_smart_trades', 0)}\n"
+                f"  - Closed Smart Trades: {stats.get('closed_smart_trades', 0)}\n"
+                f"  - Copy Profit: {stats.get('copy_profit_sol', 0):.4f} SOL\n"
+                f"  - Smart Profit: {stats.get('smart_profit_sol', 0):.4f} SOL\n"
                 f"  💰 Total Profit: {total_profit:.4f} SOL\n"
                 f"  📈 Avg Profit/Trade: {total_profit/max(total_trades,1):.4f} SOL\n\n"
                 f"**Features:**\n"

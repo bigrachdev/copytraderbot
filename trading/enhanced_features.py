@@ -430,95 +430,105 @@ class EnhancedFeatures:
     def check_daily_loss_limit(self, user_id: int) -> Tuple[bool, float]:
         """
         Check if user has hit daily loss limit.
+        Delegates to risk_engine which persists state to DB.
         Returns (can_trade, current_daily_loss).
         """
         if not ENABLE_DAILY_LOSS_LIMIT:
             return True, 0.0
 
-        # Check user toggle
         user_enabled = db.get_user_setting(user_id, 'enable_daily_loss_limit', False)
         if not user_enabled:
             return True, 0.0
 
         today = datetime.now().date().isoformat()
 
-        # Get or initialize daily loss
-        if user_id not in self._daily_loss or self._daily_loss[user_id]['date'] != today:
-            self._daily_loss[user_id] = {'date': today, 'loss': 0.0}
-
-        current_loss = self._daily_loss[user_id]['loss']
+        # Prefer DB-persisted state if available
+        if hasattr(db, 'get_risk_state_value'):
+            last_reset = db.get_risk_state_value(user_id, 'last_reset_date', today)
+            if last_reset != today:
+                db.set_risk_state_value(user_id, 'daily_loss_pct', 0.0)
+                db.set_risk_state_value(user_id, 'last_reset_date', today)
+            current_loss = float(db.get_risk_state_value(user_id, 'daily_loss_pct', 0.0))
+        else:
+            # Fallback to in-memory
+            if user_id not in self._daily_loss or self._daily_loss[user_id]['date'] != today:
+                self._daily_loss[user_id] = {'date': today, 'loss': 0.0}
+            current_loss = self._daily_loss[user_id]['loss']
 
         if current_loss >= DAILY_LOSS_LIMIT_PCT:
-            logger.warning(
-                f"[DailyLoss] User {user_id} hit daily limit "
-                f"({current_loss:.1f}% ≥ {DAILY_LOSS_LIMIT_PCT}%)"
-            )
+            logger.warning(f"[DailyLoss] User {user_id} hit daily limit ({current_loss:.1f}%)")
             return False, current_loss
 
         return True, current_loss
 
     def record_daily_loss(self, user_id: int, profit_loss_pct: float):
-        """Record daily PnL for loss limit tracking."""
+        """Record daily PnL — persisted to DB."""
         today = datetime.now().date().isoformat()
 
-        if user_id not in self._daily_loss or self._daily_loss[user_id]['date'] != today:
-            self._daily_loss[user_id] = {'date': today, 'loss': 0.0}
-
-        if profit_loss_pct < 0:
-            self._daily_loss[user_id]['loss'] += abs(profit_loss_pct)
-
-        logger.debug(
-            f"[DailyLoss] User {user_id} recorded {profit_loss_pct:.1f}%  "
-            f"total={self._daily_loss[user_id]['loss']:.1f}%"
-        )
+        if hasattr(db, 'get_risk_state_value'):
+            last_reset = db.get_risk_state_value(user_id, 'last_reset_date', today)
+            if last_reset != today:
+                db.set_risk_state_value(user_id, 'daily_loss_pct', 0.0)
+                db.set_risk_state_value(user_id, 'last_reset_date', today)
+            if profit_loss_pct < 0:
+                current = float(db.get_risk_state_value(user_id, 'daily_loss_pct', 0.0))
+                db.set_risk_state_value(user_id, 'daily_loss_pct', current + abs(profit_loss_pct))
+        else:
+            if user_id not in self._daily_loss or self._daily_loss[user_id]['date'] != today:
+                self._daily_loss[user_id] = {'date': today, 'loss': 0.0}
+            if profit_loss_pct < 0:
+                self._daily_loss[user_id]['loss'] += abs(profit_loss_pct)
 
     def check_cool_off_period(self, user_id: int) -> Tuple[bool, int]:
         """
-        Check if user is in cool-off period after consecutive losses.
+        Check if user is in cool-off period.
         Returns (can_trade, minutes_remaining).
         """
         if not ENABLE_COOL_OFF_PERIOD:
             return True, 0
 
-        # Check user toggle
         user_enabled = db.get_user_setting(user_id, 'enable_cool_off_period', False)
         if not user_enabled:
             return True, 0
 
-        if user_id not in self._consecutive_losses:
-            self._consecutive_losses[user_id] = {'count': 0, 'cool_off_until': 0}
+        if hasattr(db, 'get_risk_state_value'):
+            cooldown_until = float(db.get_risk_state_value(user_id, 'cooldown_until', 0))
+        else:
+            data = self._consecutive_losses.get(user_id, {'count': 0, 'cool_off_until': 0})
+            cooldown_until = data['cool_off_until']
 
-        user_data = self._consecutive_losses[user_id]
-
-        # Check if in cool-off
-        if user_data['cool_off_until'] > time.time():
-            remaining = int((user_data['cool_off_until'] - time.time()) / 60)
-            logger.warning(f"[CoolOff] User {user_id} in cool-off for {remaining} more minutes")
+        if cooldown_until > time.time():
+            remaining = int((cooldown_until - time.time()) / 60)
+            logger.warning(f"[CoolOff] User {user_id} in cool-off for {remaining}m")
             return False, remaining
 
         return True, 0
 
     def record_trade_result(self, user_id: int, is_profitable: bool):
-        """
-        Track consecutive losses and trigger cool-off if needed.
-        """
-        if user_id not in self._consecutive_losses:
-            self._consecutive_losses[user_id] = {'count': 0, 'cool_off_until': 0}
-
-        user_data = self._consecutive_losses[user_id]
-
-        if is_profitable:
-            user_data['count'] = 0  # Reset on profit
+        """Track consecutive losses — persisted to DB."""
+        if hasattr(db, 'get_risk_state_value'):
+            count = int(db.get_risk_state_value(user_id, 'consecutive_losses', 0))
+            if is_profitable:
+                db.set_risk_state_value(user_id, 'consecutive_losses', 0)
+            else:
+                count += 1
+                db.set_risk_state_value(user_id, 'consecutive_losses', count)
+                if count >= COOL_OFF_LOSSES:
+                    until = time.time() + (COOL_OFF_MINUTES * 60)
+                    db.set_risk_state_value(user_id, 'cooldown_until', until)
+                    db.set_risk_state_value(user_id, 'consecutive_losses', 0)
+                    logger.warning(f"[CoolOff] User {user_id} triggered {COOL_OFF_MINUTES}min cooldown")
         else:
-            user_data['count'] += 1
-
-            if user_data['count'] >= COOL_OFF_LOSSES:
-                user_data['cool_off_until'] = time.time() + (COOL_OFF_MINUTES * 60)
-                logger.warning(
-                    f"[CoolOff] User {user_id} triggered cool-off "
-                    f"({COOL_OFF_MINUTES}min) after {user_data['count']} losses"
-                )
-                user_data['count'] = 0  # Reset after triggering
+            if user_id not in self._consecutive_losses:
+                self._consecutive_losses[user_id] = {'count': 0, 'cool_off_until': 0}
+            user_data = self._consecutive_losses[user_id]
+            if is_profitable:
+                user_data['count'] = 0
+            else:
+                user_data['count'] += 1
+                if user_data['count'] >= COOL_OFF_LOSSES:
+                    user_data['cool_off_until'] = time.time() + (COOL_OFF_MINUTES * 60)
+                    user_data['count'] = 0
 
     # =========================================================================
     # 10. RugCheck Integration
