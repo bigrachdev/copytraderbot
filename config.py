@@ -106,18 +106,22 @@ DEFAULT_COPY_SCALE   = float(os.getenv('DEFAULT_COPY_SCALE',   '1.0'))
 DEFAULT_PRIORITY_FEE_FLOOR = int(os.getenv('DEFAULT_PRIORITY_FEE_FLOOR', '5000'))
 
 # ── Copy-trader — whale qualification ────────────────────────────────────────
-WHALE_MIN_TRADES     = int(os.getenv('WHALE_MIN_TRADES',     '5'))
-WHALE_MIN_WIN_RATE   = float(os.getenv('WHALE_MIN_WIN_RATE', '0.40'))
+WHALE_MIN_TRADES     = int(os.getenv('WHALE_MIN_TRADES',     '20'))
+WHALE_MIN_WIN_RATE   = float(os.getenv('WHALE_MIN_WIN_RATE', '0.60'))
 WHALE_MIN_AVG_PROFIT = float(os.getenv('WHALE_MIN_AVG_PROFIT', '-10.0'))
+WHALE_STALE_DAYS     = int(os.getenv('WHALE_STALE_DAYS', '14'))
 
 # ── Copy-trader — signal / position defaults ──────────────────────────────────
 COPY_SIGNAL_WINDOW_SECONDS  = int(os.getenv('COPY_SIGNAL_WINDOW_SECONDS',   '300'))
 COPY_LOSS_CHECK_WINDOW      = int(os.getenv('COPY_LOSS_CHECK_WINDOW',        '5'))
 COPY_DEFAULT_PROFIT_TARGET  = float(os.getenv('COPY_DEFAULT_PROFIT_TARGET',  '0.30'))
-COPY_DEFAULT_TRAILING_STOP  = float(os.getenv('COPY_DEFAULT_TRAILING_STOP',  '0.15'))
+COPY_DEFAULT_TRAILING_STOP  = float(os.getenv('COPY_DEFAULT_TRAILING_STOP',  '0.10'))
 COPY_DEFAULT_MAX_LOSS       = float(os.getenv('COPY_DEFAULT_MAX_LOSS',       '0.20'))
 COPY_DEFAULT_MAX_HOLD_HOURS = float(os.getenv('COPY_DEFAULT_MAX_HOLD_HOURS', '24.0'))
 COPY_MAX_PRICE_IMPACT_PCT   = float(os.getenv('COPY_MAX_PRICE_IMPACT_PCT',   '5.0'))
+COPY_SIGNAL_SCALE_1_WHALE   = float(os.getenv('COPY_SIGNAL_SCALE_1_WHALE',   '0.5'))
+COPY_SIGNAL_SCALE_2_WHALE   = float(os.getenv('COPY_SIGNAL_SCALE_2_WHALE',   '1.0'))
+COPY_SIGNAL_SCALE_3_WHALE   = float(os.getenv('COPY_SIGNAL_SCALE_3_WHALE',   '1.5'))
 
 # ── Smart Trader — position management ───────────────────────────────────────
 SMART_MIN_TRADE_SOL       = float(os.getenv('SMART_MIN_TRADE_SOL',       '0.05'))
@@ -157,7 +161,7 @@ SMART_WHALE_LOOKBACK_DAYS   = int(os.getenv('SMART_WHALE_LOOKBACK_DAYS',    '30'
 
 # ── Smart Trader — auto-smart scan loop ──────────────────────────────────────
 SMART_SCAN_INTERVAL         = int(os.getenv('SMART_SCAN_INTERVAL',          str(30 * 60)))
-SMART_TRAILING_STOP_PCT     = float(os.getenv('SMART_TRAILING_STOP_PCT',    '0.15'))
+SMART_TRAILING_STOP_PCT     = float(os.getenv('SMART_TRAILING_STOP_PCT',    '0.10'))
 SMART_REBUY_COOLDOWN        = int(os.getenv('SMART_REBUY_COOLDOWN',         '300'))
 SMART_REBUY_MIN_MOMENTUM    = int(os.getenv('SMART_REBUY_MIN_MOMENTUM',     '60'))
 SMART_REBUY_MAX_RISK        = float(os.getenv('SMART_REBUY_MAX_RISK',       '65'))
@@ -176,7 +180,7 @@ ENABLE_TOKEN_DISCOVERY_PLUS = os.getenv('ENABLE_TOKEN_DISCOVERY_PLUS', 'false').
 ENABLE_TP_LADDER_OPT        = os.getenv('ENABLE_TP_LADDER_OPT', 'false').lower() == 'true'
 ENABLE_REBUY_ENHANCED       = os.getenv('ENABLE_REBUY_ENHANCED', 'false').lower() == 'true'
 # Risk management
-ENABLE_DAILY_LOSS_LIMIT     = os.getenv('ENABLE_DAILY_LOSS_LIMIT', 'false').lower() == 'true'
+ENABLE_DAILY_LOSS_LIMIT     = os.getenv('ENABLE_DAILY_LOSS_LIMIT', 'true').lower() == 'true'
 ENABLE_COOL_OFF_PERIOD      = os.getenv('ENABLE_COOL_OFF_PERIOD', 'false').lower() == 'true'
 # MEV Protection
 ENABLE_JITO_PROTECTION      = os.getenv('ENABLE_JITO_PROTECTION', 'false').lower() == 'true'
@@ -196,7 +200,7 @@ TP_LADDER_VOLATILITY_ADJ    = os.getenv('TP_LADDER_VOLATILITY_ADJ', 'true').lowe
 TP_BREAKEVEN_AFTER_TP1      = os.getenv('TP_BREAKEVEN_AFTER_TP1', 'true').lower() == 'true'
 REBUY_MAX_PER_TOKEN         = int(os.getenv('REBUY_MAX_PER_TOKEN', '2'))            # Max rebuys per token
 REBUY_PROFIT_REDUCTION      = float(os.getenv('REBUY_PROFIT_REDUCTION', '0.5'))     # Cooldown reduction if last trade profitable
-DAILY_LOSS_LIMIT_PCT        = float(os.getenv('DAILY_LOSS_LIMIT_PCT', '10.0'))      # Stop trading after -10% day
+DAILY_LOSS_LIMIT_PCT        = float(os.getenv('DAILY_LOSS_LIMIT_PCT', '5.0'))       # Stop trading after -5% day
 COOL_OFF_LOSSES             = int(os.getenv('COOL_OFF_LOSSES', '3'))                # Cool-off after 3 consecutive losses
 COOL_OFF_MINUTES            = int(os.getenv('COOL_OFF_MINUTES', '30'))              # Cool-off duration
 JITO_MIN_TRADE_SOL          = float(os.getenv('JITO_MIN_TRADE_SOL', '5.0'))         # Use Jito for trades > 5 SOL
@@ -298,7 +302,7 @@ WHALE_SCORE_PROFIT_WEIGHT       = float(os.getenv('WHALE_SCORE_PROFIT_WEIGHT', '
 WHALE_SCORE_DRAWDOWN_WEIGHT     = float(os.getenv('WHALE_SCORE_DRAWDOWN_WEIGHT', '0.25'))      # 25%
 WHALE_SCORE_RECENCY_WEIGHT      = float(os.getenv('WHALE_SCORE_RECENCY_WEIGHT', '0.15'))       # 15%
 WHALE_SCORE_CONSISTENCY_WEIGHT  = float(os.getenv('WHALE_SCORE_CONSISTENCY_WEIGHT', '0.10'))   # 10%
-WHALE_MAX_CONSECUTIVE_LOSSES    = int(os.getenv('WHALE_MAX_CONSECUTIVE_LOSSES', '5'))          # Pause if 5+ losses
+WHALE_MAX_CONSECUTIVE_LOSSES    = int(os.getenv('WHALE_MAX_CONSECUTIVE_LOSSES', '3'))          # Pause if 3+ losses
 WHALE_CONSISTENCY_LOOKBACK_DAYS = int(os.getenv('WHALE_CONSISTENCY_LOOKBACK_DAYS', '14'))      # 2-week consistency check
 WHALE_SCORE_THRESHOLD_TO_TRADE  = float(os.getenv('WHALE_SCORE_THRESHOLD_TO_TRADE', '50.0'))   # Min score to copy
 

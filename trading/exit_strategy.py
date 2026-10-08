@@ -74,7 +74,7 @@ class ExitStrategyManager:
         Returns trailing stop percentage (e.g., 0.15 for 15% trailing stop)
         """
         if not ENABLE_DYNAMIC_TRAILING_STOP:
-            return 0.15  # Default 15%
+            return 0.10  # Default 10%
 
         if not tp_hit:
             return 0.0  # Don't use trailing stop until TP1 hit

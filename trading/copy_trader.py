@@ -37,11 +37,15 @@ from config import (
     COPY_TRADE_CHECK_INTERVAL, MIN_TRADE_AMOUNT,
     DEFAULT_COPY_SCALE, WSOL_MINT,
     WHALE_MIN_TRADES, WHALE_MIN_WIN_RATE, WHALE_MIN_AVG_PROFIT,
+    WHALE_STALE_DAYS,
     COPY_SIGNAL_WINDOW_SECONDS, COPY_LOSS_CHECK_WINDOW,
     COPY_DEFAULT_PROFIT_TARGET, COPY_DEFAULT_TRAILING_STOP,
     COPY_DEFAULT_MAX_LOSS, COPY_DEFAULT_MAX_HOLD_HOURS,
     COPY_MAX_PRICE_IMPACT_PCT,
+    COPY_SIGNAL_SCALE_1_WHALE, COPY_SIGNAL_SCALE_2_WHALE, COPY_SIGNAL_SCALE_3_WHALE,
+    BROADCAST_MIN_LIQUIDITY_USD,
     ENABLE_JITO_PROTECTION, JITO_MIN_TRADE_SOL,
+    ENABLE_DAILY_LOSS_LIMIT,
 )
 from data.database import db
 from chains.solana.dex_swaps import swapper
@@ -81,6 +85,10 @@ class CopyTradingEngine:
         self._pending_signals: Dict[tuple, List[Dict]] = {}
         # Trailing stop monitors: { (user_id, token_address): asyncio.Task }
         self._position_monitors: Dict[tuple, asyncio.Task] = {}
+        # Daily-loss-limit pause guard: set of user_ids currently paused
+        self._loss_limit_paused: set = set()
+        # Whale momentum exit tracking: { (user_id, token_address): {'price_at_trigger', 'trigger_time'} }
+        self._whale_momentum_exit_pending: Dict[tuple, Dict] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -300,24 +308,26 @@ class CopyTradingEngine:
         """Check historical copy-performance to decide if this whale is worth copying.
 
         Uses enhanced qualification if enabled (Sharpe ratio, drawdown checks).
-        Wallets with fewer than WHALE_MIN_TRADES closed positions pass through
-        with a warning — we can't disqualify on insufficient data.
+        Enforces WHALE_MIN_TRADES hard gate, win-rate floor, stale-whale rejection,
+        and consecutive-loss cap.
         """
-        # Try enhanced qualification first
+        from trading.whale_scorer import whale_scorer
+
+        # Enhanced qualification first
         qualified, reason = enhanced_features.is_whale_qualified_enhanced(user_id, whale_address)
         if not qualified:
             logger.warning(f"⛔ Whale {whale_address[:8]} not qualified (enhanced): {reason}")
             return False, reason
 
-        # Fall back to basic qualification if enhanced is disabled or passes
         records = db.get_copy_performance(user_id, whale_address, limit=50)
         closed = [
             r for r in records
             if r.get('status') == 'closed' and r.get('user_profit_percent') is not None
         ]
 
+        # Hard gate: not enough history → REJECT (don't trade unknown wallets)
         if len(closed) < WHALE_MIN_TRADES:
-            return True, f"insufficient_history ({len(closed)} trades — allowing)"
+            return False, f"insufficient_history ({len(closed)}/{WHALE_MIN_TRADES} trades required)"
 
         wins = sum(1 for r in closed if r['user_profit_percent'] > 0)
         win_rate = wins / len(closed)
@@ -327,6 +337,24 @@ class CopyTradingEngine:
             return False, f"win_rate {win_rate:.0%} below {WHALE_MIN_WIN_RATE:.0%} floor"
         if avg_profit < WHALE_MIN_AVG_PROFIT:
             return False, f"avg_profit {avg_profit:.1f}% below {WHALE_MIN_AVG_PROFIT}% floor"
+
+        # Stale whale: reject if last trade was > WHALE_STALE_DAYS ago
+        most_recent_ts = max(
+            (r.get('opened_at') or 0 for r in closed),
+            default=0,
+        )
+        if most_recent_ts:
+            days_since = (time.time() - most_recent_ts) / 86400
+            if days_since > WHALE_STALE_DAYS:
+                return False, (
+                    f"stale_whale ({days_since:.0f}d since last trade, "
+                    f"limit {WHALE_STALE_DAYS}d)"
+                )
+
+        # Consecutive losses gate via whale_scorer
+        should_trade, consec_losses = whale_scorer.check_consecutive_losses(user_id, whale_address)
+        if not should_trade:
+            return False, f"consecutive_losses ({consec_losses} >= 3 max)"
 
         return True, f"qualified  win_rate={win_rate:.0%}  avg_profit={avg_profit:.1f}%"
 
@@ -404,10 +432,13 @@ class CopyTradingEngine:
         for s in existing:
             s['executed'] = True
 
-        # Enhanced signal aggregation with performance weighting
-        multiplier = enhanced_features.get_signal_multiplier_enhanced(
-            user_id, token, unique_count, whale_ranks=[]
-        )
+        # 3-tier signal multiplier: 1 whale = 0.5x, 2 = 1.0x, 3+ = 1.5x
+        if unique_count >= 3:
+            multiplier = COPY_SIGNAL_SCALE_3_WHALE   # 1.5x
+        elif unique_count == 2:
+            multiplier = COPY_SIGNAL_SCALE_2_WHALE   # 1.0x
+        else:
+            multiplier = COPY_SIGNAL_SCALE_1_WHALE   # 0.5x
 
         return True, unique_count, multiplier
 
@@ -455,6 +486,31 @@ class CopyTradingEngine:
                                   wallet_config: Dict, swap_data: Dict):
         """Route a detected whale swap through all feature gates, then execute."""
 
+        # Whale exit mirror: if the whale is SELLING a token we hold → exit immediately
+        if swap_data.get('outputMint') == WSOL_MINT:
+            sold_token = swap_data.get('inputMint', '')
+            if sold_token and sold_token != WSOL_MINT:
+                existing = db.get_pending_trade_by_token(user_id, sold_token)
+                if existing:
+                    logger.info(
+                        f"🐋 Whale exit mirror: {whale_address[:8]} SOLD {sold_token[:8]} "
+                        f"— exiting our position immediately"
+                    )
+                    pm_key = (user_id, sold_token)
+                    if pm_key in self._position_monitors and not self._position_monitors[pm_key].done():
+                        self._position_monitors[pm_key].cancel()
+                    asyncio.create_task(
+                        self._exit_position(
+                            user_id,
+                            existing.get('id', 0),
+                            sold_token,
+                            existing.get('token_amount', 0),
+                            'whale_exit_mirror',
+                        )
+                    )
+                # Don't copy the sell trade itself — return regardless
+                return
+
         # 0. Runtime risk gates
         if not self._passes_runtime_risk_gates(user_id):
             return
@@ -478,6 +534,21 @@ class CopyTradingEngine:
                 logger.warning(f"🚫 Token {output_mint[:8]} blocked: {filter_reason}")
                 return
             logger.debug(f"✅ Token filter: {filter_reason}")
+
+            # 3a. Liquidity check (> $30k)
+            liquidity_ok, liquidity_usd = await self._check_token_liquidity(output_mint)
+            if not liquidity_ok:
+                logger.warning(
+                    f"🚫 Token {output_mint[:8]} liquidity ${liquidity_usd:,.0f} "
+                    f"< ${BROADCAST_MIN_LIQUIDITY_USD:,} minimum — skipping"
+                )
+                return
+
+            # 3b. Age check — skip tokens launched < 24h ago
+            token_age_ok = await self._check_token_age(output_mint)
+            if not token_age_ok:
+                logger.warning(f"🚫 Token {output_mint[:8]} is < 24h old — skipping")
+                return
 
         # 4. Signal aggregation
         should_execute, signal_count, size_multiplier = self._register_signal(
@@ -507,10 +578,10 @@ class CopyTradingEngine:
         )
         user_balance = await self._get_user_sol_balance(user_id)
         base_scale = float(wallet_config.get('copy_scale', DEFAULT_COPY_SCALE))
-        
+
         # Apply dynamic copy scale based on whale performance
         scale = enhanced_features.get_dynamic_copy_scale(user_id, whale_address, base_scale)
-        
+
         weight = float(wallet_config.get('weight', 1.0))
         amount = user_balance * whale_pct * scale * weight * size_multiplier
 
@@ -543,6 +614,8 @@ class CopyTradingEngine:
             logger.warning(
                 f"Daily loss limit hit for user {user_id}: {current_loss:.1f}%"
             )
+            if ENABLE_DAILY_LOSS_LIMIT and user_id not in self._loss_limit_paused:
+                asyncio.create_task(self._pause_copy_trading_for(user_id, duration_seconds=7200))
             return False
 
         can_trade_cooloff, remaining_min = enhanced_features.check_cool_off_period(user_id)
@@ -635,6 +708,70 @@ class CopyTradingEngine:
         scale  = float(wallet_config.get('copy_scale', DEFAULT_COPY_SCALE))
         weight = float(wallet_config.get('weight', 1.0))
         return whale_amount * scale * weight
+
+    async def _check_token_liquidity(self, token_address: str) -> Tuple[bool, float]:
+        """Return (passes, liquidity_usd). Requires > $30,000 USD liquidity."""
+        try:
+            async with aiohttp.ClientSession() as session:
+                url = f"https://api.dexscreener.com/latest/dex/tokens/{token_address}"
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                    if resp.status != 200:
+                        return False, 0.0
+                    data = await resp.json(content_type=None)
+            pairs = [p for p in (data.get('pairs') or []) if p.get('chainId') == 'solana']
+            if not pairs:
+                return False, 0.0
+            best = max(
+                pairs,
+                key=lambda p: float((p.get('liquidity') or {}).get('usd', 0) or 0),
+            )
+            liquidity_usd = float((best.get('liquidity') or {}).get('usd', 0) or 0)
+            return liquidity_usd >= BROADCAST_MIN_LIQUIDITY_USD, liquidity_usd
+        except Exception as e:
+            logger.warning(f"Liquidity check failed for {token_address[:8]}: {e}")
+            return False, 0.0  # Block on error — don't copy unverified token
+
+    async def _check_token_age(self, token_address: str) -> bool:
+        """Return True if token pair is >= 24 hours old."""
+        try:
+            async with aiohttp.ClientSession() as session:
+                url = f"https://api.dexscreener.com/latest/dex/tokens/{token_address}"
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                    if resp.status != 200:
+                        return False
+                    data = await resp.json(content_type=None)
+            pairs = [p for p in (data.get('pairs') or []) if p.get('chainId') == 'solana']
+            if not pairs:
+                return False
+            best = max(
+                pairs,
+                key=lambda p: float((p.get('liquidity') or {}).get('usd', 0) or 0),
+            )
+            created_at_ms = best.get('pairCreatedAt', 0) or 0
+            if not created_at_ms:
+                return False  # Unknown age → block
+            age_hours = (time.time() - created_at_ms / 1000) / 3600
+            return age_hours >= 24.0
+        except Exception as e:
+            logger.warning(f"Token age check failed for {token_address[:8]}: {e}")
+            return False  # Block on error
+
+    async def _pause_copy_trading_for(self, user_id: int, duration_seconds: int = 7200):
+        """Pause all monitoring tasks for this user for duration_seconds, then resume."""
+        if user_id in self._loss_limit_paused:
+            return  # Already paused — don't double-pause
+        self._loss_limit_paused.add(user_id)
+        logger.warning(
+            f"⏸️ Daily loss limit: pausing all copy trading for user {user_id} "
+            f"for {duration_seconds // 60} minutes"
+        )
+        self.stop_monitoring_for_user(user_id)
+        try:
+            await asyncio.sleep(duration_seconds)
+        finally:
+            self._loss_limit_paused.discard(user_id)
+        logger.info(f"▶️ Resuming copy trading for user {user_id} after loss-limit pause")
+        await self.start_monitoring_for_user(user_id)
 
     # ------------------------------------------------------------------
     # Trade execution
@@ -784,7 +921,9 @@ class CopyTradingEngine:
                     self._position_monitors[pm_key] = asyncio.create_task(
                         self._monitor_position_trailing(
                             user_id, position_id, output_mint,
-                            user_entry_price, tokens_received
+                            user_entry_price, tokens_received,
+                            watched_wallet=watched_wallet,
+                            signal_count=signal_count,
                         )
                     )
                 else:
@@ -828,23 +967,28 @@ class CopyTradingEngine:
         token_address: str,
         entry_price: float,
         token_amount: float,
-        profit_target: float   = DEFAULT_PROFIT_TARGET,
+        profit_target: float    = DEFAULT_PROFIT_TARGET,
         trailing_stop_pct: float = DEFAULT_TRAILING_STOP,
-        max_loss_pct: float    = DEFAULT_MAX_LOSS,
-        max_hours: float       = DEFAULT_MAX_HOLD_HOURS,
+        max_loss_pct: float     = DEFAULT_MAX_LOSS,
+        max_hours: float        = DEFAULT_MAX_HOLD_HOURS,
+        watched_wallet: str     = '',
+        signal_count: int       = 1,
     ):
         """
-        Monitor a position with four exit triggers:
-          • Hard stop loss       — exit 100% if PnL ≤ -max_loss_pct
-          • Partial take-profit  — sell 50% when PnL ≥ +profit_target
-          • Trailing stop        — exit remaining if price drops trailing_stop_pct from peak
-          • Time-decay exit      — exit after max_hours regardless of PnL
+        Monitor a position with four exit triggers plus whale-exit overrides:
+          • Whale exit check      — exit immediately if triggering whale sold
+          • Hard stop loss        — exit 100% if PnL ≤ -max_loss_pct
+          • Partial take-profit   — sell 50% when PnL ≥ +profit_target
+          • Trailing stop         — exit remaining if price drops trailing_stop_pct from peak
+          • Whale momentum exit   — if 50%+ buying whales sold, start 5-min countdown
+          • Time-decay exit       — exit after max_hours regardless of PnL
         """
         peak_price        = entry_price or 1e-12
         partial_taken     = False
         remaining_amount  = token_amount
         start_time        = time.time()
         check_interval    = 30  # seconds
+        token_key         = (user_id, token_address)
 
         logger.info(
             f"📊 Trailing monitor: {token_address[:8]}…  "
@@ -860,6 +1004,24 @@ class CopyTradingEngine:
                     return
 
                 elapsed_hours = (time.time() - start_time) / 3600
+
+                # Whale exit check — if the whale who triggered this entry has since sold
+                if watched_wallet:
+                    try:
+                        from data.database import db as _db
+                        whale_sold = _db.has_whale_sold_token(user_id, watched_wallet, token_address)
+                        if whale_sold:
+                            logger.info(
+                                f"🐋 Whale {watched_wallet[:8]} sold {token_address[:8]} — "
+                                f"exiting position (whale_exit_trigger)"
+                            )
+                            await self._exit_position(
+                                user_id, position_id, token_address,
+                                remaining_amount, 'whale_exit_trigger',
+                            )
+                            return
+                    except Exception as _e:
+                        logger.debug(f"Whale exit check error: {_e}")
 
                 # Time-decay exit
                 if elapsed_hours >= max_hours:
@@ -926,6 +1088,57 @@ class CopyTradingEngine:
                         remaining_amount, 'trailing_stop'
                     )
                     return
+
+                # Whale momentum exit: if 50%+ of original buying whales have sold → countdown
+                if signal_count and signal_count > 1:
+                    try:
+                        from data.database import db as _db2
+                        buyers = [
+                            s['whale'] for s in self._pending_signals.get(token_key, [])
+                        ]
+                        if buyers:
+                            sold_count = sum(
+                                1 for w in buyers
+                                if _db2.has_whale_sold_token(user_id, w, token_address)
+                            )
+                            existing_ctx = self._whale_momentum_exit_pending.get(token_key)
+                            if not existing_ctx and sold_count / len(buyers) >= 0.5:
+                                # Start 5-minute countdown
+                                self._whale_momentum_exit_pending[token_key] = {
+                                    'price_at_trigger': current_price,
+                                    'trigger_time': time.time(),
+                                }
+                                logger.info(
+                                    f"⚠️ Whale momentum exit: {sold_count}/{len(buyers)} whales sold "
+                                    f"{token_address[:8]} — 5min countdown started"
+                                )
+                            elif existing_ctx:
+                                elapsed = time.time() - existing_ctx['trigger_time']
+                                trigger_price = existing_ctx['price_at_trigger']
+                                price_gain = (
+                                    (current_price - trigger_price) / trigger_price
+                                    if trigger_price else 0
+                                )
+                                if elapsed >= 300:  # 5 minutes expired
+                                    if price_gain < 0.05:
+                                        logger.info(
+                                            f"📉 Whale momentum exit: 5min elapsed, "
+                                            f"price gain {price_gain*100:.1f}% < 5% — exiting"
+                                        )
+                                        await self._exit_position(
+                                            user_id, position_id, token_address,
+                                            remaining_amount, 'whale_momentum_exit',
+                                        )
+                                        self._whale_momentum_exit_pending.pop(token_key, None)
+                                        return
+                                    else:
+                                        logger.info(
+                                            f"✅ Whale momentum exit cancelled: price up "
+                                            f"{price_gain*100:.1f}% in 5min"
+                                        )
+                                        self._whale_momentum_exit_pending.pop(token_key, None)
+                    except Exception as _me:
+                        logger.debug(f"Whale momentum exit check error: {_me}")
 
                 await asyncio.sleep(check_interval)
 
@@ -1171,80 +1384,50 @@ class CopyTradingEngine:
         signal_count: int,
         exec_time_ms: int,
     ):
-        """Broadcast copy trade signal to Telegram channel."""
+        """Broadcast copy trade signal to Telegram channel via post_whale_trade."""
         try:
-            logger.info(f"📢 Preparing to broadcast copy signal for user {user_id}, token {token_address[:12]}…")
-            
             from trading.token_analyzer import token_analyzer
-            # Fetch token metadata for better signal
-            logger.info("🔍 Fetching token info for signal broadcast...")
+            from trading.whale_scorer import whale_scorer
+
             token_info = await token_analyzer.get_token_info(token_address)
-            token_name = token_info.get('name', 'Unknown Token') if token_info else 'Unknown Token'
-            liquidity = token_info.get('liquidity_usd', 0) if token_info else 0
-            logger.info(f"✅ Token info fetched: {token_name}, liquidity=${liquidity:.0f}")
+            token_symbol = (token_info.get('symbol', '?') if token_info else '?') or '?'
+            price_usd = float((token_info.get('price_usd', 0) if token_info else 0) or 0)
+            # Fallback: estimate price from SOL amount and tokens received
+            if price_usd <= 0 and tokens_received > 0:
+                sol_price_usd = 150.0  # rough fallback
+                price_usd = (amount * sol_price_usd) / tokens_received
 
-            # Determine confidence based on signal count
-            if signal_count >= 3:
-                confidence = 'HIGH'
-            elif signal_count >= 2:
-                confidence = 'MEDIUM'
-            else:
-                confidence = 'LOW'
-            logger.info(f"📊 Signal confidence: {confidence} ({signal_count} whales)")
+            # Get whale score and stats for the alert
+            whale_score = whale_scorer.score_whale(user_id, whale_wallet)
+            records = db.get_copy_performance(user_id, whale_wallet, limit=50)
+            closed = [
+                r for r in records
+                if r.get('status') == 'closed' and r.get('user_profit_percent') is not None
+            ]
+            total_trades = len(closed)
+            wins = sum(1 for r in closed if r['user_profit_percent'] > 0)
+            win_rate = (wins / total_trades) if total_trades > 0 else 0.0
 
-            # Build DexScreener URL
-            dexscreener_url = f"https://dexscreener.com/solana/{token_address}"
+            await tg_broadcaster.post_whale_trade(
+                whale_address=whale_wallet,
+                token_symbol=token_symbol,
+                token_mint=token_address,
+                action='BUY',
+                sol_amount=amount,
+                price_usd=price_usd,
+                whale_score=whale_score,
+                win_rate=win_rate,
+                total_trades=total_trades,
+                signal_count=signal_count,
+            )
 
-            signal_data = {
-                'token_name': token_name,
-                'token_address': token_address,
-                'action': 'BUY',
-                'size_sol': amount,
-                'size_usd': 0,  # Would need price feed to calculate
-                'wallet_address': whale_wallet,
-                'entry_price': entry_price,
-                'dexscreener_url': dexscreener_url,
-                'confidence': confidence,
-                'liquidity_usd': liquidity,
-            }
-
-            logger.info(f"📤 Calling broadcaster.broadcast_signal...")
-            result = await tg_broadcaster.broadcast_signal(signal_data)
-            if result:
-                logger.info(f"📢 Successfully broadcasted copy signal for {token_name}")
-            else:
-                logger.warning(f"⚠️ Broadcast signal returned False for {token_name}")
-
-            # Broadcast whale alert if trade size > $10k
-            # Estimate USD value from SOL amount (use rough SOL price or skip if unknown)
-            sol_price_usd = 150  # Fallback placeholder; replace with real price feed if available
-            usd_value = amount * sol_price_usd
-            if usd_value > 10000:
-                try:
-                    logger.info(f"🐋 Whale alert threshold met: ${usd_value:,.2f}")
-                    alert_data = {
-                        'wallet_label': token_name,  # Use token name as context
-                        'wallet_address': whale_wallet,
-                        'token_name': token_name,
-                        'token_address': token_address,
-                        'action': 'BUY',
-                        'amount': amount,
-                        'usd_value': usd_value,
-                        'tx_hash': 'N/A',  # Would need actual tx hash from swap data
-                    }
-                    await tg_broadcaster.broadcast_whale_alert(alert_data)
-                    logger.info(f"🐋 Broadcasted whale alert for ${usd_value:,.2f} trade")
-                except Exception as e:
-                    logger.error(f"Failed to broadcast whale alert: {e}")
-
-            # Notify admins
             await notification_engine.notify_admins(
                 f"🐋 *Copy Trade Executed*\n"
                 f"User ID: `{user_id}`\n"
-                f"Token: `{token_name}`\n"
+                f"Token: `{token_symbol}`\n"
                 f"Amount: `{amount:.4f} SOL`\n"
                 f"Whale: `{whale_wallet[:12]}...`\n"
-                f"Signals: `{signal_count}` | Confidence: `{confidence}`"
+                f"Signals: `{signal_count}`"
             )
 
         except Exception as e:

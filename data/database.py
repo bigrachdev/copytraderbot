@@ -2047,6 +2047,48 @@ class Database:
             logger.error(f"Error getting open copy position: {e}")
             return None
 
+    def has_whale_sold_token(
+        self, user_id: int, whale_address: str, token_address: str
+    ) -> bool:
+        """
+        Return True if the given whale has a recorded exit (whale_exit_mirror or
+        whale_exit_trigger) for this token in the copy_performance table.
+
+        Used by the trailing-stop monitor to detect when the trigger whale has sold.
+        Conservative: returns False on any DB error so positions are not exited spuriously.
+        """
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            if self.use_postgres:
+                cursor.execute(
+                    """
+                    SELECT COUNT(*) FROM copy_performance
+                    WHERE user_id = %s
+                      AND watched_wallet = %s
+                      AND token_address = %s
+                      AND exit_reason IN ('whale_exit_mirror', 'whale_exit_trigger')
+                    """,
+                    (user_id, whale_address, token_address),
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT COUNT(*) FROM copy_performance
+                    WHERE user_id = ?
+                      AND watched_wallet = ?
+                      AND token_address = ?
+                      AND exit_reason IN ('whale_exit_mirror', 'whale_exit_trigger')
+                    """,
+                    (user_id, whale_address, token_address),
+                )
+            count = cursor.fetchone()[0]
+            conn.close()
+            return count > 0
+        except Exception as e:
+            logger.debug(f"has_whale_sold_token check failed: {e}")
+            return False  # Safe default — don't exit if we can't check
+
     def get_copy_performance(self, user_id: int, watched_wallet: str = None,
                              limit: int = 20) -> List[Dict]:
         """Get copy trade performance history."""
