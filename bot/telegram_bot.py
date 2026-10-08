@@ -2656,7 +2656,7 @@ class TelegramBot:
             "**🛡️ Risk Management:**\n"
             "• Never trade more than 20% per position\n"
             "• Enable daily loss limit (-10%)\n"
-            "• Use stop-loss (-20%) and trailing stop (-15%)\n\n"
+            "• Use stop-loss (-20%) and trailing stop (-10%)\n\n"
             "**📖 Full Documentation:**\n"
             "• See FAQ_HOWTO.md for complete guide\n"
             "• Includes troubleshooting & best practices"
@@ -2735,7 +2735,7 @@ class TelegramBot:
                 "• Aggressive: 20-30% (experienced only)\n\n"
                 "**Stop Losses:**\n"
                 "• Hard stop: -20% (automatic exit)\n"
-                "• Trailing: -15% from peak (locks profits)\n"
+                "• Trailing: -10% from peak (locks profits)\n"
                 "• Time decay: 24h max hold\n\n"
                 "**When to Pause:**\n"
                 "• Hit daily loss limit\n"
@@ -3228,7 +3228,7 @@ class TelegramBot:
             "The copy trader uses a built-in trailing stop:\n\n"
             "• Hard stop-loss: **-20%** from entry\n"
             "• Partial exit: **+30%** (sell 50%)\n"
-            "• Trailing stop: **-15%** from peak\n"
+            "• Trailing stop: **-10%** from peak\n"
             "• Time-decay exit: after **24 hours**\n\n"
             "These apply automatically to all copy trades.",
             reply_markup=InlineKeyboardMarkup(keyboard),

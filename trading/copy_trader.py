@@ -909,7 +909,7 @@ class CopyTradingEngine:
                     f"Token: `{output_mint[:12]}…`\n"
                     f"Spent: {amount:.4f} SOL  |  Tokens: {tokens_received:.6f}\n"
                     f"Signals: {signal_count}  |  Latency: {exec_time_ms}ms\n"
-                    f"TP: +30%  |  Trailing stop: -15%"
+                    f"TP: +30%  |  Trailing stop: -{int(COPY_DEFAULT_TRAILING_STOP * 100)}%"
                 )
 
                 # Launch trailing-stop monitor for this position

@@ -117,13 +117,12 @@ class TelegramBroadcaster:
     # =========================================================================
 
     async def _heartbeat_loop(self):
-        """Post a brief alive-ping to the channel every 5 minutes."""
+        """Log-only heartbeat every 5 minutes — no public channel spam."""
         while True:
             try:
                 await asyncio.sleep(300)
-                if self.bot:
-                    now = datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
-                    await self._send_message(f"<i>🤖 Bot active — {now}</i>")
+                now = datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
+                logger.debug("💓 Broadcaster alive — %s", now)
             except asyncio.CancelledError:
                 break
             except Exception as e:

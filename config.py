@@ -265,8 +265,6 @@ API_DETECT_RATE_KEYWORDS     = os.getenv('API_DETECT_RATE_KEYWORDS', 'true').low
 DATA_FETCHER_CACHE_STATS     = os.getenv('DATA_FETCHER_CACHE_STATS', 'true').lower() == 'true'  # Log cache stats
 DATA_FETCHER_CLEANUP_INTERVAL= int(os.getenv('DATA_FETCHER_CLEANUP_INTERVAL', '3600'))          # Cleanup every 1 hour
 
-# Logging
-LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
 LOG_RATE_LIMIT_HITS = os.getenv('LOG_RATE_LIMIT_HITS', 'true').lower() == 'true'  # Log rate limit detection
 
 # ── Notifications ─────────────────────────────────────────────────────────────
@@ -278,9 +276,6 @@ NOTIFICATION_PROFIT_MILESTONES = [
     float(x) for x in
     os.getenv('NOTIFICATION_PROFIT_MILESTONES', '10,25,50,100,250,500').split(',')
 ]
-
-# ── Logging ───────────────────────────────────────────────────────────────────
-LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # ═ IMPROVEMENTS: SPEED, WHALE FILTERING, EXIT STRATEGY, RESILIENCE, GRID TRADING
