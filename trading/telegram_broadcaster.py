@@ -145,6 +145,7 @@ class TelegramBroadcaster:
         win_rate: float,       # 0.0–1.0
         total_trades: int,
         signal_count: int = 1,
+        avg_profit: float = 0.0,
     ) -> bool:
         """Post a whale trade alert to the channel with copy-trade summary."""
         if not self.bot:
@@ -198,28 +199,45 @@ class TelegramBroadcaster:
             strength_emoji = "📡"
 
         whale_short = f"{whale_address[:6]}...{whale_address[-4:]}"
-        mint_short = f"{token_mint[:6]}...{token_mint[-4:]}"
         action_label = "BUY 🟢" if action.upper() == "BUY" else "SELL 🔴"
-        sol_usd = sol_amount * price_usd if price_usd > 0 else 0
-        action_verb = "buying" if action.upper() == "BUY" else "selling"
+        usd_value = sol_amount * price_usd if price_usd > 0 else 0
+        bot_username = os.getenv('TELEGRAM_BOT_USERNAME', '')
 
-        message = (
-            "<b>🐋 Whale Alert</b>\n\n"
-            f"<b>Action:</b> {action_label}\n"
-            f"<b>Token:</b> <code>${self._safe_text(token_symbol)}</code> "
-            f"(<code>{self._safe_text(mint_short)}</code>)\n"
-            f"<b>Whale:</b> <code>{self._safe_text(whale_short)}</code>\n"
-            f"<b>Score:</b> {whale_score:.1f} | "
-            f"<b>Win Rate:</b> {win_rate * 100:.0f}% | "
-            f"<b>Trades:</b> {total_trades}\n\n"
-            f"<b>Amount:</b> {sol_amount:.2f} SOL"
-            + (f" (~${sol_usd:,.0f})" if sol_usd > 0 else "")
-            + "\n"
-            f"<b>Price:</b> ${price_usd:.6f}\n\n"
-            f"{strength_emoji} Signal strength: <b>{strength}</b> "
-            f"({signal_count} whale{'s' if signal_count > 1 else ''} {action_verb})\n"
-            "📊 Copying automatically"
+        signal_line = (
+            f"{strength_emoji} <b>{signal_count} whale{'s' if signal_count > 1 else ''} "
+            f"{'buying' if action.upper() == 'BUY' else 'selling'} — {strength} signal</b>"
         )
+
+        avg_profit_line = (
+            f"   💵 Avg Profit: +{avg_profit:.0f}%" if avg_profit > 0 else None
+        )
+
+        cta_line = (
+            f"👉 Start copying: @{self._safe_text(bot_username)}"
+            if bot_username else None
+        )
+
+        lines = [
+            f"🐋 <b>WHALE ALERT — {self._safe_text(action_label)}</b>",
+            "─────────────────────",
+            f"🪙 Token: <b>${self._safe_text(token_symbol)}</b>  •  "
+            f"<a href='https://dexscreener.com/solana/{token_mint}'>Chart</a>  •  "
+            f"<a href='https://solscan.io/token/{token_mint}'>Solscan</a>",
+            f"💰 Size: <b>{sol_amount:.2f} SOL</b>"
+            + (f"  (~${usd_value:,.0f})" if usd_value > 0 else ""),
+            "",
+            f"🐳 Whale <code>{self._safe_text(whale_short)}</code>",
+            f"   📈 Win Rate: {int(win_rate * 100)}%  |  {total_trades} trades",
+            avg_profit_line,
+            f"   ⭐ Score: {whale_score:.1f}/100",
+            "",
+            signal_line,
+            "",
+            "📊 Bot is copying this trade automatically.",
+            cta_line,
+        ]
+
+        message = "\n".join(line for line in lines if line is not None)
 
         return await self._send_message(message)
 

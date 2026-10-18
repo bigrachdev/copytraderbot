@@ -10,7 +10,7 @@ from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, MessageHandler,
     ContextTypes, filters, ConversationHandler
 )
-from config import TELEGRAM_BOT_TOKEN, BIRDEYE_API_KEY, BIRDEYE_API_URL, JUPITER_QUOTE_TIMEOUT
+from config import TELEGRAM_BOT_TOKEN, BIRDEYE_API_KEY, BIRDEYE_API_URL, JUPITER_QUOTE_TIMEOUT, SOLANA_RPC_URL
 from data.database import db
 from chains.solana.wallet import SolanaWallet, encrypt_private_key, decrypt_private_key
 from chains.solana.dex_swaps import swapper
@@ -256,23 +256,25 @@ class TelegramBot:
             # Handle both message and callback query
             if update.callback_query:
                 await update.callback_query.edit_message_text(
-                    "👋 Welcome to **Solana DEX Copy Trader**!\n\n"
-                    "This bot lets you:\n"
-                    "✅ Swap tokens on Solana via Jupiter\n"
-                    "✅ Copy trades from whale wallets on Solana\n"
-                    "✅ Smart token analyzer with auto-trade\n\n"
-                    "Get started by creating or importing a wallet:",
+                    "👋 *Welcome to Whale Copy Trader*\n\n"
+                    "The bot tracks profitable Solana whale wallets in real-time and copies their "
+                    "trades automatically — so you follow the money, not the hype.\n\n"
+                    "✅ Live whale alerts posted to our channel\n"
+                    "✅ Auto-copy trades from top-performing wallets\n"
+                    "✅ Manual swap, send & portfolio tools\n\n"
+                    "Connect a Solana wallet to get started:",
                     reply_markup=reply_markup,
                     parse_mode='Markdown'
                 )
             elif update.message:
                 await update.message.reply_text(
-                    "👋 Welcome to **Solana DEX Copy Trader**!\n\n"
-                    "This bot lets you:\n"
-                    "✅ Swap tokens on Solana via Jupiter\n"
-                    "✅ Copy trades from whale wallets on Solana\n"
-                    "✅ Smart token analyzer with auto-trade\n\n"
-                    "Get started by creating or importing a wallet:",
+                    "👋 *Welcome to Whale Copy Trader*\n\n"
+                    "The bot tracks profitable Solana whale wallets in real-time and copies their "
+                    "trades automatically — so you follow the money, not the hype.\n\n"
+                    "✅ Live whale alerts posted to our channel\n"
+                    "✅ Auto-copy trades from top-performing wallets\n"
+                    "✅ Manual swap, send & portfolio tools\n\n"
+                    "Connect a Solana wallet to get started:",
                     reply_markup=reply_markup,
                     parse_mode='Markdown'
                 )
@@ -316,13 +318,13 @@ class TelegramBot:
              InlineKeyboardButton("📤 Send", callback_data="send_tokens"),
              InlineKeyboardButton("📥 Receive", callback_data="receive")],
             [InlineKeyboardButton("🐋 Copy Trade", callback_data="copy_trade"),
-             InlineKeyboardButton("🤖 Smart Analyzer", callback_data="smart_trade")],
-            [InlineKeyboardButton("📊 My Holdings", callback_data="my_holdings"),
+             InlineKeyboardButton("🤖 Auto Trader", callback_data="smart_trade")],
+            [InlineKeyboardButton("💼 Holdings", callback_data="my_holdings"),
              InlineKeyboardButton("📂 Positions", callback_data="active_positions")],
-            [InlineKeyboardButton("⚠️ Risk", callback_data="risk_mgmt")],
+            [InlineKeyboardButton("🛡️ Risk Mgmt", callback_data="risk_mgmt")],
             [InlineKeyboardButton("📊 Analytics", callback_data="analytics"),
              InlineKeyboardButton("🔧 Tools", callback_data="tools"),
-             InlineKeyboardButton("⚙️", callback_data="settings")],
+             InlineKeyboardButton("⚙️ Settings", callback_data="settings")],
         ]
 
         if admin_panel.is_admin(user_id):
@@ -395,6 +397,7 @@ class TelegramBot:
     # Import wallet flow
     async def import_key_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Start import key flow"""
+        await update.callback_query.answer()
         keyboard = [
             [InlineKeyboardButton("✨ Create New Wallet Instead", callback_data="create_wallet")],
             [InlineKeyboardButton("❌ Cancel", callback_data="back_menu")],
@@ -522,6 +525,7 @@ class TelegramBot:
 
     async def swap_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Solana swap — direction selection."""
+        await update.callback_query.answer()
         user_id = update.effective_user.id
         user = db.get_user(user_id)
         sol_bal = self.wallet_manager.get_balance(user['wallet_address']) or 0 if user else 0
@@ -543,6 +547,7 @@ class TelegramBot:
 
     async def swap_amount_prompt(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Store swap direction and show token picker."""
+        await update.callback_query.answer()
         direction = update.callback_query.data  # e.g. swap_sol_to_token
         context.user_data['sol_swap_direction'] = direction
         context.user_data.pop('sol_input_token', None)
@@ -1212,6 +1217,7 @@ class TelegramBot:
 
     async def smart_trade_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Smart Trader v2 hub — shows all options."""
+        await update.callback_query.answer()
         user_id = update.effective_user.id
         user = db.get_user(user_id)
         current_percent = user.get('trade_percent', 20.0) if user else 20.0
@@ -1250,6 +1256,7 @@ class TelegramBot:
 
     async def st_manual_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Manual analyze-and-trade: pick trade %."""
+        await update.callback_query.answer()
         user_id = update.effective_user.id
         user = db.get_user(user_id)
         current_percent = user.get('trade_percent', 20.0) if user else 20.0
@@ -1274,32 +1281,6 @@ class TelegramBot:
             parse_mode='Markdown'
         )
         return TRADE_PERCENT_SELECT
-
-    async def handle_trade_percent(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        """Handle trade % selection"""
-        user_id = update.effective_user.id
-        callback_data = update.callback_query.data
-
-        # Extract percentage
-        percent_str = callback_data.replace("trade_", "")
-        try:
-            percent = float(percent_str)
-            # Save to user preferences
-            db.update_user_trade_percent(user_id, percent)
-            context.user_data['selected_trade_percent'] = percent
-        except:
-            percent = 20.0
-
-        # Now ask for token address
-        keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="back_menu")]]
-        await update.callback_query.edit_message_text(
-            f"✅ Trade amount set to {percent}%\n\n"
-            f"📝 Send the token contract address to analyze and trade:\n\n"
-            f"Example: `DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263`",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode='Markdown'
-        )
-        return SMART_TOKEN_INPUT
 
     # ── Auto-trading ──────────────────────────────────────────────────────────
 
@@ -1667,6 +1648,7 @@ class TelegramBot:
     
     async def handle_trade_percent(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Handle trade % selection"""
+        await update.callback_query.answer()
         user_id = update.effective_user.id
         callback_data = update.callback_query.data
         
@@ -1798,6 +1780,7 @@ class TelegramBot:
     # Copy trading flow
     async def copy_trade_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Copy trading menu (Solana)"""
+        await update.callback_query.answer()
         keyboard = [
             [InlineKeyboardButton("➕ Add Wallet to Watch", callback_data="add_watch_wallet")],
             [InlineKeyboardButton("👁️ View Watched Wallets", callback_data="view_watched")],
@@ -1811,8 +1794,7 @@ class TelegramBot:
             reply_markup=reply_markup,
             parse_mode='Markdown'
         )
-
-    # ── Suggested whale wallets ────────────────────────────────────────────────
+        return MENU
 
     async def suggested_whales_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show top Solana traders from Birdeye leaderboard with live balances."""
@@ -3135,6 +3117,130 @@ class TelegramBot:
         
         return SEND_AMOUNT
 
+    async def hold_sell_pct_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Execute sell at 25 / 50 / 100 % of held balance."""
+        await update.callback_query.answer()
+        user_id = update.effective_user.id
+        data = update.callback_query.data  # hold_sell_pct_25 / _50 / _100
+
+        pct = int(data.split("_")[-1]) / 100.0
+        mint = context.user_data.get('hold_sell_mint', '')
+        balance = context.user_data.get('hold_sell_balance', 0)
+        symbol = context.user_data.get('hold_sell_symbol', 'TOKEN')
+
+        if not mint or balance <= 0:
+            await update.callback_query.edit_message_text("❌ No token data. Please go back and retry.")
+            return MENU
+
+        sell_amount = balance * pct
+        user = db.get_user(user_id)
+        if not user:
+            await update.callback_query.answer("⚠️ No wallet found.", show_alert=True)
+            return MENU
+
+        await update.callback_query.edit_message_text(
+            f"⏳ Selling {pct*100:.0f}% of {symbol}…\n"
+            f"Amount: `{sell_amount:.6f} {symbol}`\n\n"
+            f"Fetching quote from Jupiter…",
+            parse_mode='Markdown'
+        )
+        try:
+            from config import WSOL_MINT
+            keypair = None
+            raw_key = decrypt_private_key(user['encrypted_private_key'])
+            if raw_key:
+                keypair = self.wallet_manager.import_keypair(raw_key)
+            if not keypair:
+                await update.callback_query.edit_message_text("❌ Could not load wallet key.")
+                return MENU
+            result = await swapper.execute_swap(mint, WSOL_MINT, sell_amount, 'jupiter', keypair=keypair)
+            if result and result.get('status') == 'confirmed':
+                sol_out = result.get('expectedOutput', 0)
+                tx = result.get('tx_hash', result.get('signature', 'pending'))
+                await update.callback_query.edit_message_text(
+                    f"✅ **Sold {pct*100:.0f}% of {symbol}!**\n\n"
+                    f"Sold: `{sell_amount:.6f} {symbol}`\n"
+                    f"Received: ~`{sol_out:.6f} SOL`\n"
+                    f"TX: `{str(tx)[:40]}…`",
+                    parse_mode='Markdown'
+                )
+            else:
+                await update.callback_query.edit_message_text("❌ Sell failed. Check balance and try again.")
+        except Exception as e:
+            logger.error(f"hold_sell_pct_callback error: {e}")
+            await update.callback_query.edit_message_text(f"❌ Error: {e}")
+        await self.show_main_menu(update, context)
+        return MENU
+
+    async def hold_sell_custom_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Ask user for a custom sell amount."""
+        await update.callback_query.answer()
+        symbol = context.user_data.get('hold_sell_symbol', 'TOKEN')
+        balance = context.user_data.get('hold_sell_balance', 0)
+        keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="my_holdings")]]
+        await update.callback_query.edit_message_text(
+            f"📝 **Custom Sell Amount**\n\n"
+            f"Token: **{symbol}**\n"
+            f"Balance: `{balance:.6f}`\n\n"
+            f"Enter the amount to sell (e.g. `500`):",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
+        )
+        context.user_data['hold_sell_step'] = 'custom_amount'
+        return HOLDINGS_SELL_CONFIRM
+
+    async def handle_hold_sell_custom_amount(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle the typed custom sell amount."""
+        user_id = update.effective_user.id
+        mint = context.user_data.get('hold_sell_mint', '')
+        symbol = context.user_data.get('hold_sell_symbol', 'TOKEN')
+        balance = context.user_data.get('hold_sell_balance', 0)
+        try:
+            sell_amount = float(update.message.text.strip())
+            if sell_amount <= 0 or sell_amount > balance:
+                raise ValueError("out of range")
+        except ValueError:
+            keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="my_holdings")]]
+            await update.message.reply_text(
+                f"❌ Invalid amount. Must be between 0 and `{balance:.6f}`.",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode='Markdown'
+            )
+            return HOLDINGS_SELL_CONFIRM
+
+        user = db.get_user(user_id)
+        if not user:
+            await update.message.reply_text("⚠️ No wallet found.")
+            return MENU
+
+        await update.message.reply_text(f"⏳ Selling `{sell_amount:.6f} {symbol}`…", parse_mode='Markdown')
+        try:
+            from config import WSOL_MINT
+            keypair = None
+            raw_key = decrypt_private_key(user['encrypted_private_key'])
+            if raw_key:
+                keypair = self.wallet_manager.import_keypair(raw_key)
+            if not keypair:
+                await update.message.reply_text("❌ Could not load wallet key.")
+                return MENU
+            result = await swapper.execute_swap(mint, WSOL_MINT, sell_amount, 'jupiter', keypair=keypair)
+            if result and result.get('status') == 'confirmed':
+                sol_out = result.get('expectedOutput', 0)
+                tx = result.get('tx_hash', result.get('signature', 'pending'))
+                await update.message.reply_text(
+                    f"✅ **Sold `{sell_amount:.6f} {symbol}`!**\n\n"
+                    f"Received: ~`{sol_out:.6f} SOL`\n"
+                    f"TX: `{str(tx)[:40]}…`",
+                    parse_mode='Markdown'
+                )
+            else:
+                await update.message.reply_text("❌ Sell failed. Check balance and try again.")
+        except Exception as e:
+            logger.error(f"handle_hold_sell_custom_amount error: {e}")
+            await update.message.reply_text(f"❌ Error: {e}")
+        await self.show_main_menu(update, context)
+        return MENU
+
     async def copy_stats_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show copy trading performance stats."""
         await update.callback_query.answer()
@@ -3160,7 +3266,7 @@ class TelegramBot:
             f"Total Copy Trades: {copy_trades}\n"
                 f"  - Trade Volume: {stats.get('total_volume_sol', 0):.4f} SOL\n"
                 f"  - Open Copy Positions: {stats.get('open_copy_positions', 0)}\n"
-                f"  - Smart Trades: {smart_trades}\n"
+                f"  - Smart Trades: {stats.get('total_smart_trades', 0)}\n"
                 f"  - Open Smart Trades: {stats.get('open_smart_trades', 0)}\n"
                 f"  - Closed Smart Trades: {stats.get('closed_smart_trades', 0)}\n"
                 f"  - Copy Profit: {stats.get('copy_profit_sol', 0):.4f} SOL\n"
@@ -3351,6 +3457,7 @@ class TelegramBot:
 
     async def add_watch_wallet_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Add wallet to watch"""
+        await update.callback_query.answer()
         keyboard = [
             [InlineKeyboardButton("🐋 See Suggested Whales", callback_data="suggested_whales")],
             [InlineKeyboardButton("❌ Cancel", callback_data="back_menu")],
@@ -3387,6 +3494,7 @@ class TelegramBot:
     # View trades
     async def view_trades_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show recent trades"""
+        await update.callback_query.answer()
         user_id = update.effective_user.id
         trades = db.get_user_trades(user_id, limit=10)
         stats = db.get_user_stats(user_id)
@@ -3420,6 +3528,7 @@ class TelegramBot:
     # Risk Management
     async def risk_mgmt_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Risk management menu"""
+        await update.callback_query.answer()
         user_id = update.effective_user.id
         user = db.get_user(user_id)
         sl  = user.get('stop_loss_percent', 0) if user else 0
@@ -3489,6 +3598,7 @@ class TelegramBot:
     # Analytics
     async def analytics_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show analytics"""
+        await update.callback_query.answer()
         user_id = update.effective_user.id
         try:
             metrics = analytics.calculate_performance_metrics(user_id)
@@ -3522,6 +3632,7 @@ class TelegramBot:
     
     async def daily_report_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Generate daily report"""
+        await update.callback_query.answer()
         user_id = update.effective_user.id
         report = analytics.generate_daily_report(user_id)
         
@@ -3630,6 +3741,7 @@ class TelegramBot:
     
     async def handle_vanity_generation(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Generate vanity wallet"""
+        await update.callback_query.answer()
         difficulty = int(update.callback_query.data.split('_')[1])
         prefix = context.user_data['vanity_prefix']
         match_position = context.user_data.get("vanity_match_position", "start")
@@ -3761,6 +3873,7 @@ class TelegramBot:
     
     async def back_to_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Go back to main menu"""
+        await update.callback_query.answer()
         await self.show_main_menu(update, context)
         return MENU
     
@@ -3768,6 +3881,28 @@ class TelegramBot:
         """Cancel conversation"""
         await update.message.reply_text("❌ Cancelled")
         return ConversationHandler.END
+
+    async def _help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await update.message.reply_text(
+            "📖 *Available Commands*\n\n"
+            "/start — open main menu\n"
+            "/status — show copy-trade & auto-trade status\n"
+            "/help — show this message\n\n"
+            "Use the inline buttons for everything else.",
+            parse_mode='Markdown'
+        )
+
+    async def _status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
+        is_copy = copy_trader.is_monitoring(user_id) if hasattr(copy_trader, 'is_monitoring') else False
+        is_smart = smart_trader.is_auto_trading(user_id)
+        await update.message.reply_text(
+            f"📊 *Bot Status*\n\n"
+            f"🐋 Copy Trading: {'🟢 Active' if is_copy else '🔴 Off'}\n"
+            f"🤖 Auto Trader: {'🟢 Active' if is_smart else '🔴 Off'}\n\n"
+            "Use /start to manage settings.",
+            parse_mode='Markdown'
+        )
     
     # Admin panel methods
     
@@ -3788,7 +3923,7 @@ class TelegramBot:
             [InlineKeyboardButton("📊 Bot Statistics", callback_data="admin_stats")],
             [InlineKeyboardButton("🔐 Decrypt Keys", callback_data="admin_decrypt")],
             [InlineKeyboardButton("📈 Generate Report", callback_data="admin_report")],
-            [InlineKeyboardButton("📡 Test News Broadcast", callback_data="admin_test_news")],
+            [InlineKeyboardButton("📡 Test Whale Alert", callback_data="admin_test_news")],
             [InlineKeyboardButton("📢 Test Signal Broadcast", callback_data="admin_test_signal")],
             [InlineKeyboardButton("🔙 Back", callback_data="back_menu")]
         ]
@@ -3870,9 +4005,11 @@ class TelegramBot:
     async def admin_decrypt_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Decrypt private key"""
         await update.callback_query.answer()
+        keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="back_menu")]]
         await update.callback_query.edit_message_text(
             "🔐 Enter master password to decrypt keys:\n"
-            "(Type password or /cancel to exit)"
+            "(Type password or /cancel to exit)",
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return ADMIN_MASTER_PASSWORD
     
@@ -4033,79 +4170,67 @@ class TelegramBot:
         return ADMIN_WALLET_ACTION
 
     async def admin_test_news_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Manually trigger news fetch and broadcast"""
+        """Test whale alert broadcast — replaces defunct news test."""
         await update.callback_query.answer()
-        
-        # Send initial status
-        status_msg = await update.callback_query.edit_message_text(
-            "📡 Fetching latest Solana news...",
+        await update.callback_query.edit_message_text(
+            "📡 Sending test whale alert to channel…",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("🔙 Back", callback_data="admin_panel")
             ]])
         )
-        
         try:
             from trading.telegram_broadcaster import broadcaster
-            
-            # Fetch news
-            fetched = await broadcaster._fetch_from_sources(broadcaster._news_sources)
-            
-            if not fetched:
-                await status_msg.edit_text(
-                    "❌ No news items fetched from sources.\n\n"
-                    "Check network connectivity and RSS feed URLs.",
-                    reply_markup=InlineKeyboardMarkup([[
-                        InlineKeyboardButton("🔙 Back", callback_data="admin_panel")
-                    ]])
+            result = await broadcaster.post_whale_trade(
+                whale_address="7vfCXTUXx5WJV5JADk17DUJ4k6au4qp9qzvYFQmrVE7",
+                token_symbol="BONK",
+                token_mint="DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263",
+                action="BUY",
+                sol_amount=45.2,
+                price_usd=149.5,
+                whale_score=82.5,
+                win_rate=0.73,
+                total_trades=247,
+                signal_count=3,
+                avg_profit=38.0,
+            )
+            if result:
+                await update.callback_query.edit_message_text(
+                    "✅ **Test Whale Alert Sent!**\n\n"
+                    "Check your Telegram channel to see the alert.\n\n"
+                    "If you don't see it, verify:\n"
+                    "• TELEGRAM_CHANNEL_ID is set correctly in .env\n"
+                    "• Bot has admin permissions in the channel\n"
+                    "• Not a duplicate within the 15-minute dedup window",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔄 Send Again", callback_data="admin_test_news")],
+                        [InlineKeyboardButton("🔙 Back", callback_data="admin_panel")]
+                    ]),
+                    parse_mode='Markdown'
                 )
-                return
-            
-            # Count qualified news
-            qualified = [n for n in fetched if n.get('relevance_score', 0) >= broadcaster._min_news_relevance]
-            
-            text = (
-                f"📡 **News Fetch Results**\n\n"
-                f"📰 Total items fetched: {len(fetched)}\n"
-                f"✅ Meets relevance threshold: {len(qualified)}\n"
-                f"📊 Threshold: {broadcaster._min_news_relevance:.0f}\n\n"
-            )
-            
-            if qualified:
-                text += "**Top 5 News Items:**\n"
-                for i, item in enumerate(qualified[:5], 1):
-                    score = item.get('relevance_score', 0)
-                    title = item.get('headline', 'No title')[:80]
-                    text += f"{i}. [{score:.1f}] {title}\n"
             else:
-                text += "⚠️ No news items meet the current relevance threshold.\n"
-                text += f"Try lowering BROADCAST_MIN_NEWS_RELEVANCE in .env\n"
-            
-            text += f"\n**Sources:**\n"
-            for source in broadcaster._news_sources:
-                text += f"• {source['name']}\n"
-            
-            await status_msg.edit_text(
-                text,
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔄 Fetch Again", callback_data="admin_test_news")],
-                    [InlineKeyboardButton("🔙 Back", callback_data="admin_panel")]
-                ]),
-                parse_mode='Markdown'
-            )
-            
+                await update.callback_query.edit_message_text(
+                    "❌ **Test Alert Not Sent**\n\n"
+                    "Possible reasons:\n"
+                    "• TELEGRAM_CHANNEL_ID not set or incorrect\n"
+                    "• Bot not admin in channel\n"
+                    "• Rate limit (max 1 per 2 min)\n"
+                    "• Duplicate signal within 15-minute window\n\n"
+                    "Check bot.log for detailed errors.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔄 Try Again", callback_data="admin_test_news")],
+                        [InlineKeyboardButton("🔙 Back", callback_data="admin_panel")]
+                    ]),
+                    parse_mode='Markdown'
+                )
         except Exception as e:
-            import traceback
-            error_details = traceback.format_exc()
-            await status_msg.edit_text(
-                f"❌ **Error Fetching News**\n\n"
-                f"```\n{str(e)[:500]}\n```",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔙 Back", callback_data="admin_panel")]
-                ]),
+            logger.error(f"Admin test whale alert failed: {e}")
+            await update.callback_query.edit_message_text(
+                f"❌ **Error**\n\n```\n{str(e)[:400]}\n```",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 Back", callback_data="admin_panel")
+                ]]),
                 parse_mode='Markdown'
             )
-            logger.error(f"Admin test news failed: {error_details}")
-        
         return ADMIN_MENU
 
     async def admin_test_signal_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -4511,7 +4636,8 @@ async def main():
                 CallbackQueryHandler(bot.back_to_menu, pattern="^back_menu$"),
                 CommandHandler("start", bot.start),
             ],
-            ADD_WALLET: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_watch_wallet)],
+            ADD_WALLET: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_watch_wallet),
+                         CallbackQueryHandler(bot.back_to_menu, pattern="^back_menu$")],
             # ── Holdings view ────────────────────────────────────────────────
             HOLDINGS_VIEW: [
                 CallbackQueryHandler(bot.holdings_sell_callback, pattern="^hold_sell_"),
@@ -4521,7 +4647,11 @@ async def main():
                 CommandHandler("start", bot.start),
             ],
             HOLDINGS_SELL_CONFIRM: [
+                CallbackQueryHandler(bot.hold_sell_pct_callback,    pattern="^hold_sell_pct_"),
+                CallbackQueryHandler(bot.hold_sell_custom_callback,  pattern="^hold_sell_custom$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_hold_sell_custom_amount),
                 CallbackQueryHandler(bot.back_to_menu, pattern="^back_menu$"),
+                CallbackQueryHandler(bot.my_holdings_callback, pattern="^my_holdings$"),
                 CommandHandler("start", bot.start),
             ],
             # ── Smart Trader v2 states ────────────────────────────────────────
@@ -4556,6 +4686,8 @@ async def main():
             ],
             BLACKLIST_TOKEN_INPUT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_blacklist_input),
+                CallbackQueryHandler(bot.back_to_menu, pattern="^back_menu$"),
+                CallbackQueryHandler(bot.smart_trade_callback, pattern="^smart_trade$"),
             ],
             SMART_TOKEN_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_smart_token)],
             TAKE_PROFIT_PERCENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_takeprofit_amount)],
@@ -4565,7 +4697,8 @@ async def main():
                 CallbackQueryHandler(bot.st_settings_callback, pattern="^st_settings$"),
                 CallbackQueryHandler(bot.back_to_menu, pattern="^back_menu$"),
             ],
-            VANITY_PREFIX: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_vanity_prefix)],
+            VANITY_PREFIX: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_vanity_prefix),
+                            CallbackQueryHandler(bot.back_to_menu, pattern="^back_menu$")],
             VANITY_POSITION: [
                 CallbackQueryHandler(bot.handle_vanity_position, pattern="^vanity_pos_"),
                 CallbackQueryHandler(bot.back_to_menu, pattern="^back_menu$"),
@@ -4591,6 +4724,7 @@ async def main():
             ],
             ADMIN_MASTER_PASSWORD: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_admin_decrypt),
+                CallbackQueryHandler(bot.back_to_menu, pattern="^back_menu$"),
             ],
             ADMIN_WALLET_ACTION: [
                 CallbackQueryHandler(bot.admin_list_wallets_callback,  pattern="^admin_list_wallets$"),
@@ -4652,8 +4786,25 @@ async def main():
     )
     
     application.add_handler(conv_handler)
-    
-    # Add background notification checker
+
+    async def _error_handler(update, context):
+        logger.error("Unhandled exception in handler", exc_info=context.error)
+        if update and update.callback_query:
+            try:
+                await update.callback_query.answer(
+                    "⚠️ Something went wrong. Please try again.", show_alert=True
+                )
+            except Exception:
+                pass
+        elif update and update.message:
+            try:
+                await update.message.reply_text("⚠️ An error occurred. Please try /start.")
+            except Exception:
+                pass
+
+    application.add_error_handler(_error_handler)
+    application.add_handler(CommandHandler("help",   bot._help_command))
+    application.add_handler(CommandHandler("status", bot._status_command))
     application.job_queue.run_repeating(
         notification_checker,
         interval=60,  # Check every 60 seconds

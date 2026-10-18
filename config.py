@@ -10,6 +10,7 @@ load_dotenv()
 # ── Telegram ──────────────────────────────────────────────────────────────────
 TELEGRAM_BOT_TOKEN    = os.getenv('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHANNEL_ID   = os.getenv('TELEGRAM_CHANNEL_ID')
+TELEGRAM_BOT_USERNAME = os.getenv('TELEGRAM_BOT_USERNAME', '')
 
 # ── Telegram Broadcasting ────────────────────────────────────────────────────
 BROADCAST_NEWS_INTERVAL_MINUTES  = int(os.getenv('BROADCAST_NEWS_INTERVAL_MINUTES', '30'))
