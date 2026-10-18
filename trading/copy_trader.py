@@ -46,6 +46,8 @@ from config import (
     BROADCAST_MIN_LIQUIDITY_USD,
     ENABLE_JITO_PROTECTION, JITO_MIN_TRADE_SOL,
     ENABLE_DAILY_LOSS_LIMIT,
+    CONVERGENCE_MIN_WHALES, CONVERGENCE_TIME_WINDOW_MINUTES, CONVERGENCE_DEDUP_HOURS,
+    WHALE_EXIT_MAX_HOLD_DAYS,
 )
 from data.database import db
 from chains.solana.dex_swaps import swapper
@@ -89,6 +91,8 @@ class CopyTradingEngine:
         self._loss_limit_paused: set = set()
         # Whale momentum exit tracking: { (user_id, token_address): {'price_at_trigger', 'trigger_time'} }
         self._whale_momentum_exit_pending: Dict[tuple, Dict] = {}
+        # Convergence signal dedup: { token_mint: timestamp }
+        self._posted_convergence_signals: Dict[str, float] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -422,6 +426,34 @@ class CopyTradingEngine:
         unique_count = len({s['whale'] for s in existing})
         already_executed = any(s.get('executed') for s in existing)
 
+        # ── Convergence alert ────────────────────────────────────────────────
+        if unique_count >= CONVERGENCE_MIN_WHALES:
+            now_c     = time.time()
+            dedup_ttl = CONVERGENCE_DEDUP_HOURS * 3600
+            last_conv = self._posted_convergence_signals.get(token, 0)
+            if now_c - last_conv >= dedup_ttl:
+                self._posted_convergence_signals[token] = now_c
+                whale_list = list({s['whale'] for s in existing})
+                try:
+                    from trading.whale_scorer import whale_scorer as _ws2
+                    scores = [_ws2.score_whale(user_id, w) for w in whale_list]
+                except Exception:
+                    scores = [0.0] * len(whale_list)
+                total_sol_conv  = sum(s['amount'] for s in existing)
+                oldest_ts       = min(s['ts'] for s in existing)
+                time_window_min = max(1, int((now_c - oldest_ts) / 60))
+                asyncio.create_task(tg_broadcaster.post_convergence_alert(
+                    token_symbol=token[:6],
+                    token_mint=token,
+                    whale_count=unique_count,
+                    total_sol=total_sol_conv,
+                    price_usd=0.0,
+                    whale_addresses=whale_list,
+                    whale_scores=scores,
+                    time_window_minutes=time_window_min,
+                ))
+        # ─────────────────────────────────────────────────────────────────────
+
         if already_executed:
             # Additional whale confirmed — log but don't re-open
             if is_new_whale:
@@ -508,6 +540,59 @@ class CopyTradingEngine:
                             'whale_exit_mirror',
                         )
                     )
+                # Post whale exit alert to channel
+                try:
+                    from trading.whale_scorer import whale_scorer as _ws
+                    whale_stats = db.get_whale_stats(user_id, whale_address)
+                    recent_buys = db.get_copy_performance(user_id, whale_address, limit=50)
+                    entry_record = None
+                    for rec in recent_buys:
+                        if (rec.get('token_address') == sold_token
+                                and rec.get('status') == 'open'
+                                and rec.get('whale_entry_price')):
+                            entry_record = rec
+                            break
+                    profit_pct = None
+                    hold_duration_hours = 0.0
+                    if entry_record:
+                        entry_price = entry_record.get('whale_entry_price', 0)
+                        exit_price  = swap_data.get('whaleEntryPrice', 0)
+                        if entry_price and exit_price:
+                            profit_pct = ((exit_price - entry_price) / entry_price) * 100
+                        opened_at = entry_record.get('opened_at')
+                        if opened_at:
+                            opened_ts = (
+                                opened_at.timestamp()
+                                if hasattr(opened_at, 'timestamp')
+                                else float(opened_at)
+                            )
+                            hold_duration_hours = (time.time() - opened_ts) / 3600
+                    if hold_duration_hours <= WHALE_EXIT_MAX_HOLD_DAYS * 24 or hold_duration_hours == 0.0:
+                        whale_score_val  = _ws.score_whale(user_id, whale_address) if whale_stats else 0.0
+                        total_trades_val = 0
+                        win_rate_val     = 0.0
+                        avg_profit_val   = 0.0
+                        if whale_stats:
+                            total            = whale_stats.get('total_trades', 0)
+                            wins             = whale_stats.get('winning_trades', 0)
+                            win_rate_val     = wins / total if total > 0 else 0.0
+                            total_trades_val = total
+                            avg_profit_val   = whale_stats.get('avg_profit_pct', 0.0)
+                        asyncio.create_task(tg_broadcaster.post_whale_exit(
+                            whale_address=whale_address,
+                            token_symbol=sold_token[:6],
+                            token_mint=sold_token,
+                            sol_amount=float(swap_data.get('inputAmount', 0.0)),
+                            price_usd=0.0,
+                            profit_pct=profit_pct,
+                            hold_duration_hours=hold_duration_hours,
+                            whale_score=whale_score_val,
+                            win_rate=win_rate_val,
+                            total_trades=total_trades_val,
+                            avg_profit=avg_profit_val,
+                        ))
+                except Exception as _e:
+                    logger.warning('Whale exit alert error: %s', _e)
                 # Don't copy the sell trade itself — return regardless
                 return
 

@@ -2128,6 +2128,110 @@ class Database:
             logger.error(f"Error getting copy performance: {e}")
             return []
 
+    def get_top_whales_by_pnl(self, days: int = 7, limit: int = 5) -> list:
+        """
+        Return top whales by average user_profit_percent for the last `days` days.
+        Each returned dict has keys:
+          watched_wallet, avg_profit, total_trades, wins, best_trade_pct, best_trade_token
+        Returns [] on any error.
+        """
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+
+            if self.use_postgres:
+                cursor.execute('''
+                    SELECT
+                        watched_wallet,
+                        AVG(user_profit_percent)                                  AS avg_profit,
+                        COUNT(*)                                                  AS total_trades,
+                        SUM(CASE WHEN user_profit_percent > 0 THEN 1 ELSE 0 END) AS wins,
+                        MAX(user_profit_percent)                                  AS best_trade_pct
+                    FROM copy_performance
+                    WHERE status = \'closed\'
+                      AND user_profit_percent IS NOT NULL
+                      AND closed_at >= NOW() - INTERVAL \'1 day\' * %s
+                    GROUP BY watched_wallet
+                    ORDER BY AVG(user_profit_percent) DESC
+                    LIMIT %s
+                ''', (days, limit))
+            else:
+                cursor.execute('''
+                    SELECT
+                        watched_wallet,
+                        AVG(user_profit_percent)                                  AS avg_profit,
+                        COUNT(*)                                                  AS total_trades,
+                        SUM(CASE WHEN user_profit_percent > 0 THEN 1 ELSE 0 END) AS wins,
+                        MAX(user_profit_percent)                                  AS best_trade_pct
+                    FROM copy_performance
+                    WHERE status = 'closed'
+                      AND user_profit_percent IS NOT NULL
+                      AND closed_at >= datetime('now', '-' || ? || ' days')
+                    GROUP BY watched_wallet
+                    ORDER BY AVG(user_profit_percent) DESC
+                    LIMIT ?
+                ''', (days, limit))
+
+            rows = cursor.fetchall()
+            results = []
+
+            for row in rows:
+                wallet   = row['watched_wallet'] if isinstance(row, dict) else row[0]
+                best_pct = row['best_trade_pct'] if isinstance(row, dict) else row[4]
+
+                # Second query: find the token for the best trade
+                best_token = ''
+                try:
+                    if self.use_postgres:
+                        cursor.execute('''
+                            SELECT token_address FROM copy_performance
+                            WHERE watched_wallet = %s
+                              AND status = \'closed\'
+                              AND user_profit_percent IS NOT NULL
+                              AND closed_at >= NOW() - INTERVAL \'1 day\' * %s
+                            ORDER BY user_profit_percent DESC
+                            LIMIT 1
+                        ''', (wallet, days))
+                    else:
+                        cursor.execute('''
+                            SELECT token_address FROM copy_performance
+                            WHERE watched_wallet = ?
+                              AND status = 'closed'
+                              AND user_profit_percent IS NOT NULL
+                              AND closed_at >= datetime('now', '-' || ? || ' days')
+                            ORDER BY user_profit_percent DESC
+                            LIMIT 1
+                        ''', (wallet, days))
+                    best_row = cursor.fetchone()
+                    if best_row:
+                        best_token = best_row['token_address'] if isinstance(best_row, dict) else best_row[0]
+                except Exception:
+                    pass
+
+                if isinstance(row, dict):
+                    avg_p  = row.get('avg_profit', 0)
+                    total  = row.get('total_trades', 0)
+                    wins   = row.get('wins', 0)
+                else:
+                    avg_p  = row[1]
+                    total  = row[2]
+                    wins   = row[3]
+
+                results.append({
+                    'watched_wallet':   wallet,
+                    'avg_profit':       round(float(avg_p or 0), 2),
+                    'total_trades':     int(total or 0),
+                    'wins':             int(wins or 0),
+                    'best_trade_pct':   round(float(best_pct or 0), 2),
+                    'best_trade_token': best_token,
+                })
+
+            conn.close()
+            return results
+        except Exception as e:
+            logger.error(f'get_top_whales_by_pnl error: {e}')
+            return []
+
     def get_whale_rankings(self, user_id: int,
                            min_trades: int = 3,
                            lookback_days: int = 30) -> List[Dict]:

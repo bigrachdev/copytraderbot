@@ -130,6 +130,19 @@ COPY_SIGNAL_SCALE_1_WHALE   = float(os.getenv('COPY_SIGNAL_SCALE_1_WHALE',   '0.
 COPY_SIGNAL_SCALE_2_WHALE   = float(os.getenv('COPY_SIGNAL_SCALE_2_WHALE',   '1.0'))
 COPY_SIGNAL_SCALE_3_WHALE   = float(os.getenv('COPY_SIGNAL_SCALE_3_WHALE',   '1.5'))
 
+# Convergence alert settings
+CONVERGENCE_MIN_WHALES          = int(os.getenv('CONVERGENCE_MIN_WHALES', '3'))
+CONVERGENCE_TIME_WINDOW_MINUTES = int(os.getenv('CONVERGENCE_TIME_WINDOW_MINUTES', '30'))
+CONVERGENCE_DEDUP_HOURS         = int(os.getenv('CONVERGENCE_DEDUP_HOURS', '4'))
+
+# Weekly leaderboard
+LEADERBOARD_DAY_OF_WEEK         = int(os.getenv('LEADERBOARD_DAY_OF_WEEK', '6'))  # 6=Sunday
+LEADERBOARD_HOUR_UTC            = int(os.getenv('LEADERBOARD_HOUR_UTC', '18'))
+LEADERBOARD_MIN_WHALES          = int(os.getenv('LEADERBOARD_MIN_WHALES', '2'))
+
+# Whale exit alert
+WHALE_EXIT_MAX_HOLD_DAYS        = int(os.getenv('WHALE_EXIT_MAX_HOLD_DAYS', '7'))
+
 # ── Smart Trader — position management ───────────────────────────────────────
 SMART_MIN_TRADE_SOL       = float(os.getenv('SMART_MIN_TRADE_SOL',       '0.05'))
 SMART_MAX_OPEN_POSITIONS  = int(os.getenv('SMART_MAX_OPEN_POSITIONS',     '8'))
