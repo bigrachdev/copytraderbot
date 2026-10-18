@@ -12,6 +12,9 @@ TELEGRAM_BOT_TOKEN    = os.getenv('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHANNEL_ID   = os.getenv('TELEGRAM_CHANNEL_ID')
 TELEGRAM_BOT_USERNAME = os.getenv('TELEGRAM_BOT_USERNAME', '')
 
+# Minimum SOL balance required to start copying whales (covers transaction fees)
+COPY_MIN_SOL_BALANCE  = float(os.getenv('COPY_MIN_SOL_BALANCE', '0.05'))
+
 # ── Telegram Broadcasting ────────────────────────────────────────────────────
 BROADCAST_NEWS_INTERVAL_MINUTES  = int(os.getenv('BROADCAST_NEWS_INTERVAL_MINUTES', '30'))
 BROADCAST_SELF_AD_INTERVAL_HOURS = int(os.getenv('BROADCAST_SELF_AD_INTERVAL_HOURS', '4'))
@@ -102,6 +105,9 @@ SLIPPAGE_TOLERANCE   = float(os.getenv('SLIPPAGE_TOLERANCE',   '2.0'))   # %
 MAX_SLIPPAGE         = float(os.getenv('MAX_SLIPPAGE',         '5.0'))   # %
 MIN_TRADE_AMOUNT     = float(os.getenv('MIN_TRADE_AMOUNT',     '0.01'))  # SOL
 DEFAULT_COPY_SCALE   = float(os.getenv('DEFAULT_COPY_SCALE',   '1.0'))
+
+# Minimum SOL balance required to use the Copy This Whale deep-link button
+COPY_MIN_SOL_BALANCE = float(os.getenv('COPY_MIN_SOL_BALANCE', '0.05'))
 
 # Priority fee floor when live data is unavailable (microlamports)
 DEFAULT_PRIORITY_FEE_FLOOR = int(os.getenv('DEFAULT_PRIORITY_FEE_FLOOR', '5000'))

@@ -10,7 +10,7 @@ from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, MessageHandler,
     ContextTypes, filters, ConversationHandler
 )
-from config import TELEGRAM_BOT_TOKEN, BIRDEYE_API_KEY, BIRDEYE_API_URL, JUPITER_QUOTE_TIMEOUT, SOLANA_RPC_URL
+from config import TELEGRAM_BOT_TOKEN, BIRDEYE_API_KEY, BIRDEYE_API_URL, JUPITER_QUOTE_TIMEOUT, SOLANA_RPC_URL, COPY_MIN_SOL_BALANCE
 from data.database import db
 from chains.solana.wallet import SolanaWallet, encrypt_private_key, decrypt_private_key
 from chains.solana.dex_swaps import swapper
@@ -243,6 +243,12 @@ class TelegramBot:
         """Start command - works for both new users and existing users"""
         user_id = update.effective_user.id
 
+        # ── Deep link: /start copywhale_<address> ─────────────────────────────
+        if context.args and context.args[0].startswith('copywhale_'):
+            whale_address = context.args[0][len('copywhale_'):]
+            await self._handle_copywhale_deeplink(update, context, whale_address)
+            return MENU
+
         # Check if user exists
         user = db.get_user(user_id)
 
@@ -289,6 +295,91 @@ class TelegramBot:
                 await self.show_main_menu(update, context)
             return MENU
     
+    async def _handle_copywhale_deeplink(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE, whale_address: str
+    ) -> None:
+        """Handle /start copywhale_<address> deep links from channel whale alert buttons."""
+        import re as _re
+        user_id = update.effective_user.id
+
+        # Validate address format (base58, 32–44 chars)
+        if not _re.match(r'^[1-9A-HJ-NP-Za-km-z]{32,44}$', whale_address):
+            await update.message.reply_text("❌ Invalid whale address in the link.")
+            return
+
+        # 1. Check the user has a wallet
+        user = db.get_user(user_id)
+        if not user or not user.get('wallet_address'):
+            await update.message.reply_text(
+                "👋 *Welcome!* To copy this whale you need a wallet first.\n\n"
+                "Set one up and then tap the button again:",
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔐 Import Wallet", callback_data="import_key"),
+                    InlineKeyboardButton("✨ Create Wallet", callback_data="create_wallet"),
+                ]])
+            )
+            return
+
+        # 2. Check wallet is funded
+        sol_balance = 0.0
+        try:
+            sol_balance = self.wallet_manager.get_balance(user['wallet_address']) or 0.0
+        except Exception:
+            pass
+
+        if sol_balance < COPY_MIN_SOL_BALANCE:
+            await update.message.reply_text(
+                f"⚠️ *Insufficient Balance*\n\n"
+                f"Your wallet needs at least *{COPY_MIN_SOL_BALANCE} SOL* to cover "
+                f"transaction fees before copying trades.\n\n"
+                f"Fund this address and then tap the button again:\n"
+                f"`{user['wallet_address']}`\n\n"
+                f"_(tap to copy)_",
+                parse_mode='Markdown'
+            )
+            return
+
+        # 3. Check if already watching
+        watched = db.get_watched_wallets(user_id) or []
+        already_watching = any(
+            w.get('wallet_address') == whale_address for w in watched
+        )
+        if already_watching:
+            short = f"{whale_address[:8]}…{whale_address[-4:]}"
+            await update.message.reply_text(
+                f"✅ You're already copying this whale!\n\n"
+                f"Whale: `{short}`\n\n"
+                f"Check your active positions from the main menu.",
+                parse_mode='Markdown'
+            )
+            await self.show_main_menu(update, context)
+            return
+
+        # 4. Add whale and start monitoring
+        try:
+            db.add_watched_wallet(user_id, whale_address)
+            await copy_trader.start_monitoring_for_user(user_id)
+
+            short = f"{whale_address[:8]}…{whale_address[-4:]}"
+            await update.message.reply_text(
+                f"🐋 *Whale Added!*\n\n"
+                f"You're now copying:\n`{short}`\n\n"
+                f"Every trade this whale makes will be mirrored to your wallet "
+                f"automatically.\n\n"
+                f"💰 Your balance: *{sol_balance:.3f} SOL*\n"
+                f"⚡ Copy trading is active.",
+                parse_mode='Markdown'
+            )
+            await self.show_main_menu(update, context)
+
+        except Exception as e:
+            logger.error("Failed to add whale from deeplink: %s", e)
+            await update.message.reply_text(
+                "❌ Failed to add whale. Please try again from the Copy Trade menu."
+            )
+            await self.show_main_menu(update, context)
+
     async def show_main_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show main menu"""
         # Answer any pending callback query first to kill the spinner

@@ -17,9 +17,9 @@ import html
 import os
 from typing import Dict, Optional, List
 from datetime import datetime
-from telegram import Bot
+from telegram import Bot, InlineKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.error import TelegramError
-from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID
+from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, TELEGRAM_BOT_USERNAME
 
 logger = logging.getLogger(__name__)
 
@@ -201,7 +201,10 @@ class TelegramBroadcaster:
         whale_short = f"{whale_address[:6]}...{whale_address[-4:]}"
         action_label = "BUY 🟢" if action.upper() == "BUY" else "SELL 🔴"
         usd_value = sol_amount * price_usd if price_usd > 0 else 0
-        bot_username = os.getenv('TELEGRAM_BOT_USERNAME', '')
+        bot_username = TELEGRAM_BOT_USERNAME.lstrip('@')
+
+        # Safe base58 mint for use in URLs (only alphanumeric, no HTML-special chars)
+        safe_mint = re.sub(r'[^1-9A-HJ-NP-Za-km-z]', '', token_mint)
 
         signal_line = (
             f"{strength_emoji} <b>{signal_count} whale{'s' if signal_count > 1 else ''} "
@@ -221,8 +224,8 @@ class TelegramBroadcaster:
             f"🐋 <b>WHALE ALERT — {self._safe_text(action_label)}</b>",
             "─────────────────────",
             f"🪙 Token: <b>${self._safe_text(token_symbol)}</b>  •  "
-            f"<a href='https://dexscreener.com/solana/{token_mint}'>Chart</a>  •  "
-            f"<a href='https://solscan.io/token/{token_mint}'>Solscan</a>",
+            f"<a href='https://dexscreener.com/solana/{safe_mint}'>Chart</a>  •  "
+            f"<a href='https://solscan.io/token/{safe_mint}'>Solscan</a>",
             f"💰 Size: <b>{sol_amount:.2f} SOL</b>"
             + (f"  (~${usd_value:,.0f})" if usd_value > 0 else ""),
             "",
@@ -239,7 +242,15 @@ class TelegramBroadcaster:
 
         message = "\n".join(line for line in lines if line is not None)
 
-        return await self._send_message(message)
+        # Inline button — deep link to copy this specific whale in the bot
+        reply_markup = None
+        if bot_username:
+            deep_link = f"https://t.me/{bot_username}?start=copywhale_{whale_address}"
+            reply_markup = InlineKeyboardMarkup([[
+                InlineKeyboardButton("🐋 Copy This Whale", url=deep_link)
+            ]])
+
+        return await self._send_message(message, reply_markup=reply_markup)
 
     async def broadcast_signal(self, signal_data: Dict) -> bool:
         """
@@ -356,7 +367,7 @@ class TelegramBroadcaster:
     # Internal helpers
     # =========================================================================
 
-    async def _send_message(self, message: str) -> bool:
+    async def _send_message(self, message: str, reply_markup=None) -> bool:
         """Send message to Telegram channel."""
         if not self.bot or not self.channel_id:
             logger.warning(
@@ -381,6 +392,7 @@ class TelegramBroadcaster:
                 text=message,
                 parse_mode='HTML',
                 disable_web_page_preview=False,
+                reply_markup=reply_markup,
             )
             logger.info("✅ Message sent successfully")
             return True
