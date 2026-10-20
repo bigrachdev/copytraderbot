@@ -757,6 +757,8 @@ class TelegramBot:
 
     async def _sol_token_selected(self, update, context, mint: str, label: str) -> int:
         """Store the selected token and advance to next step."""
+        if hasattr(update, 'callback_query') and update.callback_query:
+            await update.callback_query.answer()
         direction = context.user_data.get('sol_swap_direction', 'swap_sol_to_token')
 
         if direction == "swap_token_to_token" and 'sol_input_token' not in context.user_data:
@@ -1063,6 +1065,7 @@ class TelegramBot:
 
     async def handle_swap_amount_continued(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Continue swap flow after large trade confirmation - calls main logic."""
+        await update.callback_query.answer()
         # Get saved values from context
         amount = context.user_data.get('sol_swap_amount', 0)
         direction = context.user_data.get('sol_swap_direction', 'swap_sol_to_token')
@@ -1964,6 +1967,7 @@ class TelegramBot:
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode='Markdown'
         )
+        return MENU
 
     async def add_sol_whale_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """One-tap add a suggested SOL whale to watch list."""
@@ -3615,7 +3619,8 @@ class TelegramBot:
             reply_markup=reply_markup,
             parse_mode='Markdown'
         )
-    
+        return MENU
+
     # Risk Management
     async def risk_mgmt_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Risk management menu"""
@@ -3645,6 +3650,7 @@ class TelegramBot:
     
     async def set_stoploss_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Set stop-loss"""
+        await update.callback_query.answer()
         keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="risk_mgmt")]]
         await update.callback_query.edit_message_text(
             "🛑 **Set Stop-Loss**\n\n"
@@ -3720,7 +3726,8 @@ class TelegramBot:
             reply_markup=reply_markup,
             parse_mode='Markdown'
         )
-    
+        return MENU
+
     async def daily_report_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Generate daily report"""
         await update.callback_query.answer()
@@ -3735,6 +3742,7 @@ class TelegramBot:
             reply_markup=reply_markup,
             parse_mode='Markdown'
         )
+        return MENU
     
     # Tools menu (Wallets & Vanity)
     async def tools_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3753,6 +3761,7 @@ class TelegramBot:
             reply_markup=reply_markup,
             parse_mode='Markdown'
         )
+        return MENU
     
     async def create_vanity_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Create vanity wallet"""
@@ -4538,6 +4547,7 @@ async def handle_sell_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def confirm_sell_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Confirm and execute sell"""
     query = update.callback_query
+    await query.answer()
     position_id = query.data[len("confirm_sell_"):]
     
     position = notification_engine.active_positions.get(position_id)
@@ -4627,6 +4637,7 @@ async def main():
     # Conversation handler
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", bot.start)],
+        allow_reentry=True,   # /start always resets state, even mid-conversation
         states={
             START: [
                 CallbackQueryHandler(bot.create_wallet_callback, pattern="^create_wallet$"),
@@ -4827,7 +4838,12 @@ async def main():
             ],
         },
         fallbacks=[
-            CallbackQueryHandler(bot.back_to_menu, pattern="^back_menu$"),
+            CallbackQueryHandler(bot.back_to_menu,                 pattern="^back_menu$"),
+            # Core menu buttons — must be in fallbacks so they work from ANY state
+            CallbackQueryHandler(bot.swap_callback,         pattern="^swap$"),
+            CallbackQueryHandler(bot.smart_trade_callback,  pattern="^smart_trade$"),
+            CallbackQueryHandler(bot.send_tokens_callback,  pattern="^send_tokens$"),
+            CallbackQueryHandler(bot.receive_callback,      pattern="^receive$"),
             # Navigation that can happen from any state
             CallbackQueryHandler(bot.copy_trade_callback, pattern="^copy_trade$"),
             CallbackQueryHandler(bot.active_positions_callback, pattern="^active_positions$"),
@@ -4876,7 +4892,24 @@ async def main():
         ]
     )
     
-    application.add_handler(conv_handler)
+    application.add_handler(conv_handler, group=0)
+
+    # ── Session recovery handler ──────────────────────────────────────────────
+    # On Render free tier, the service spins down after inactivity and restarts.
+    # Every restart wipes in-memory ConversationHandler state. Users pressing
+    # buttons from a menu shown before the restart are NOT in any conversation —
+    # the ConversationHandler ignores them completely (total button silence).
+    # This handler fires in group=1 (lower priority), catches any callback query
+    # the ConversationHandler didn't handle, and runs start() to restore MENU state.
+    async def _global_callback_recover(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Recover lost conversation state after a bot restart."""
+        try:
+            await update.callback_query.answer("🔄 Refreshing session...", show_alert=False)
+        except Exception:
+            pass
+        await bot.start(update, context)
+
+    application.add_handler(CallbackQueryHandler(_global_callback_recover), group=1)
 
     async def _error_handler(update, context):
         logger.error("Unhandled exception in handler", exc_info=context.error)
