@@ -17,7 +17,7 @@ import html
 import os
 from typing import Dict, Optional, List
 from datetime import datetime, timedelta, timezone
-from telegram import Bot, InlineKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import Bot, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.error import TelegramError
 from config import (
     TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, TELEGRAM_BOT_USERNAME,

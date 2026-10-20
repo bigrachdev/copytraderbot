@@ -1,8 +1,8 @@
-# Whale-Only Bot Refactor — Whale Gate, Signal Scaling, and Exit Improvements
+# Three new broadcast post types: whale exit, convergence alert, weekly leaderboard
 
-The change strips `TelegramBroadcaster` down to whale-trade-only signals, tightens the whale qualification gate with a hard 60% win-rate floor and stale-whale rejection, adds signal-scaling tiers (0.5x/1.0x/1.5x), gates trades behind liquidity and age checks, mirrors whale exits immediately, and tightens trailing stops from 15% to 10%. The motivation is straightforward: the service was running out of compute time broadcasting news and trending tokens nobody asked for, and the copy-trading strategy needed sharper entry and exit discipline.
+The change adds three new Telegram post types (`post_whale_exit`, `post_convergence_alert`, `post_weekly_leaderboard`) and their supporting infrastructure: a background scheduler loop, a DB query method, new config keys, and integration hooks inside the copy-trading engine. The overall structure is sound — each new post method is properly guarded by the existing rate-limiting machinery, dedup is applied, and HTML escaping via `_safe_text` is used consistently. The primary concern is a non-fatal cosmetic issue (duplicate import) and one minor behavioural gap in the leaderboard timing logic.
 
-Watch for: (1) `ENABLE_DAILY_LOSS_LIMIT` is defined **three times** in `config.py` due to duplicate `LOG_LEVEL` lines and an earlier duplicate block — the last definition wins and has the correct default, but the file should be cleaned up before the next refactor; (2) `has_whale_sold_token` can only detect exits the bot itself recorded via `whale_exit_mirror` / `whale_exit_trigger` — it will miss whale sells the bot never processed, making the whale-exit-trigger in the monitor largely a no-op until those exit reasons accumulate in the DB; (3) no coder verification output was found in the task directory — syntax was confirmed by a spot `py_compile` pass during review.
+**Watch for:** Duplicate `InlineKeyboardMarkup, InlineKeyboardButton` in the import line (non-blocking, Python silently ignores it but it signals a copy-paste edit). Leaderboard scheduler has a subtle timing edge case on the exact fire minute. No blocking correctness issues found.
 
 **Verdict**: APPROVED
 
@@ -10,97 +10,69 @@ Watch for: (1) `ENABLE_DAILY_LOSS_LIMIT` is defined **three times** in `config.p
 
 ## High-level view
 
-The broadcaster is now a focused whale-alert service. All four background loops (news, market updates, self-ads, launch updates) are gone; a 5-minute heartbeat replaces them. `post_whale_trade()` is a clean new method with its own rate-limiting path that avoids entanglement with the older `broadcast_signal()` path. The broadcaster's `__init__` is trimmed to only the state it actually needs.
+All four methods are present in `TelegramBroadcaster`. `run_weekly_leaderboard_loop` is started inside `initialize()` via `asyncio.create_task`. `_posted_convergence` is initialised in `TelegramBroadcaster.__init__`; the parallel `_posted_convergence_signals` in `CopyTradingEngine.__init__` is also present and correctly referenced in `_register_signal`.
 
-The whale gate is meaningfully stricter. The "insufficient history → allow" shortcut is reversed to a hard reject, win-rate floor is raised from 40% to 60%, stale-whale rejection is added at 14 days, and consecutive-loss cap is lowered to 3. These four changes compound: a whale that was borderline acceptable before will now be rejected on at least two of them.
+`get_top_whales_by_pnl` is implemented at line 2131 of `database.py` with correct dual-path SQL for both PostgreSQL (`NOW() - INTERVAL '1 day' * %s`) and SQLite (`datetime('now', '-' || ? || ' days')`). The row-type handling (`isinstance(row, dict)`) handles both `dict_row` (psycopg) and `sqlite3.Row` without issues.
 
-Liquidity and age gates sit between the token safety filter and signal aggregation, which is the right placement. Both fail closed on API error, which is the correct defensive posture for a copy-trade bot — better to miss a trade than to copy an unverified rug.
+The integration hook for whale exits sits in `_handle_whale_swap`, triggering on `outputMint == WSOL_MINT`. The convergence hook fires inside `_register_signal` when `unique_count >= CONVERGENCE_MIN_WHALES`. Both are correctly placed. Both propagate via `asyncio.create_task` to avoid blocking the swap-processing hot path.
 
-The whale exit mirror responds to a whale's sell side by immediately cancelling the position monitor and exiting. This is the primary exit acceleration. The secondary check inside the trailing-stop monitor (`has_whale_sold_token`) will only fire once the bot has itself recorded an exit for the whale on that token, so it acts as a consistency guard rather than an independent detection path.
-
-The whale momentum exit countdown (50%+ whales sold → 5-minute timer → exit if price hasn't risen 5%) is implemented correctly in `_monitor_position_trailing()` and handles the cancellation path when price does recover.
-
-Config changes are correct and pick up the new defaults. `.env.example` documents all new keys and marks removed broadcast keys as `# REMOVED`.
+All seven `.env.example` keys are present: `CONVERGENCE_MIN_WHALES`, `CONVERGENCE_TIME_WINDOW_MINUTES`, `CONVERGENCE_DEDUP_HOURS`, `LEADERBOARD_DAY_OF_WEEK`, `LEADERBOARD_HOUR_UTC`, `LEADERBOARD_MIN_WHALES`, `WHALE_EXIT_MAX_HOLD_DAYS`. All seven are also in `config.py` with matching defaults.
 
 ---
 
 <details>
-<summary>Issues (4)</summary>
+<summary>Issues (2)</summary>
 
-1. **Duplicate config definitions** — `LOG_LEVEL` is defined 3 times in `config.py`, `ENABLE_DAILY_LOSS_LIMIT` is effectively defined twice (lines 183 and an earlier duplicate block). The correct values win by position, but the file is fragile. Clean up duplicate declarations before the next config change.
+1. **Duplicate import** — Line 20 of `telegram_broadcaster.py` imports `InlineKeyboardMarkup, InlineKeyboardButton` twice in the same `from telegram import` statement. Python silently ignores duplicate names in a single import so there is no runtime error, but it should be cleaned up to avoid confusion.
 
-2. **`has_whale_sold_token` detection gap** — The method queries `copy_performance` for `exit_reason IN ('whale_exit_mirror', 'whale_exit_trigger')`. Those rows are only written when the bot itself processes a sell-side swap for the whale. If the whale's sell transaction arrives during a WS reconnect window, or if the bot wasn't monitoring when the sell happened, the `whale_exit_trigger` path in the trailing monitor will never fire. This limits the secondary monitor check to "the bot already handled this exit" — which is fine as a consistency guard but is not an independent detection path. Document this limitation so future developers don't over-rely on the DB check.
-
-3. **Heartbeat posts to channel on every 5-minute tick** — `_heartbeat_loop()` calls `_send_message()` unconditionally, which will post `🤖 Bot active — ...` to the Telegram channel 288 times per day. For a public channel this is noise. Consider sending to an admin chat or only when a trade was copied in the last interval, or remove the heartbeat message from the public channel entirely.
-
-4. **`notify_trade_opened` still says "Trailing stop: -15%"** — In `execute_copy_trade()` the trade confirmation message hard-codes `"TP: +30%  |  Trailing stop: -15%"` but the trailing stop is now 10%. This is a display-only inaccuracy, not a logic bug, but it will confuse users watching the channel.
+2. **Leaderboard loop timing edge case** — In `run_weekly_leaderboard_loop`, when `days_ahead == 0` the code advances to the following week only if `now.hour > LEADERBOARD_HOUR_UTC or (now.hour == LEADERBOARD_HOUR_UTC and now.minute >= 5)`. The five-minute grace window means a bot restarted at exactly `18:00:00 UTC` on Sunday would attempt to fire immediately. This is non-blocking (the 6-day cooldown in `post_weekly_leaderboard` prevents a second post anyway) but the intent is slightly obscured.
 
 </details>
 
 <details>
 <summary>Details</summary>
 
-## Broadcaster strip-down
+### Duplicate import in telegram_broadcaster.py
 
-All 27 methods listed in the plan are gone. The `__init__` retains only signal dedup state, rate-limit counters, and `_min_liquidity_usd`. The `initialize()` method launches a single `_heartbeat_loop()` task and nothing else. Imports of `xml.etree`, `email.utils`, and `urllib.parse` are removed; the remaining import list matches what the surviving methods actually need.
+Line 20 reads:
 
-`post_whale_trade()` implements its own dedup (15-minute window by `{token_mint}_{action}` hash), a 2-minute inter-signal rate limit, and a 10-per-hour cap — matching the spec exactly. It persists posted signal hashes to the DB for cross-restart dedup via `db.save_posted_signal()`, which is the same persistence mechanism `broadcast_signal()` uses.
+```python
+from telegram import Bot, InlineKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+```
 
-`broadcast_signal()` and `broadcast_whale_alert()` are retained unchanged. This is correct: other callsites may still use the generic signal path.
+Both `InlineKeyboardMarkup` and `InlineKeyboardButton` appear twice. Python processes the import successfully — the second occurrence simply rebinds the same name — so there is no `ImportError` or `NameError` at runtime. The syntax check (`py_compile`) passes. Recommend trimming to a single occurrence.
 
-The heartbeat loop posts to the public channel every 5 minutes. This is benign for internal testing but is channel spam at production volume — flagged in Issues above.
+### Leaderboard scheduler timing
 
-## Whale qualification gate
+`run_weekly_leaderboard_loop` calculates `days_ahead` correctly for the standard case. The only subtlety: if the process starts within five minutes of the fire time on the target day (`minute < 5` and `hour == LEADERBOARD_HOUR_UTC`), `days_ahead` stays 0 and the sleep is very short (or negative if `seconds_until` rounds oddly). In that scenario the loop proceeds to call `post_weekly_leaderboard()`, which is gated by its own 6-day cooldown timestamp, so double-posting is impossible. The worst outcome is an unnecessary log line and a no-op post attempt. Non-blocking.
 
-All four new checks are present and in the right order: insufficient history → win rate floor → average profit floor → stale whale → consecutive losses. The flip from "insufficient history → allow" to "insufficient history → reject" is the highest-impact change here; it gates out any wallet that hasn't built 20 closed trades, which was `WHALE_MIN_TRADES`'s previous default of 5.
+### Rate limiting and dedup coverage — confirmed correct
 
-The consecutive-loss check delegates to `whale_scorer.check_consecutive_losses()`, which reads `WHALE_MAX_CONSECUTIVE_LOSSES` from config. That constant is correctly updated to `3`.
+`post_whale_exit` and `post_convergence_alert` both share the `_last_post_times['signal']` 2-minute cooldown and the `_max_signals_last_hour` 10/hour cap, consistent with `post_whale_trade`. `post_weekly_leaderboard` uses its own `_last_post_times['leaderboard']` key with a 518,400-second (6-day) cooldown and is explicitly excluded from the hourly cap — both decisions are intentional and correct.
 
-One nuance: `_is_whale_qualified` is synchronous but does a `time.time()` call for the stale-whale check and imports `time as _time` inline. The inline import is unnecessary — `time` is already imported at module level — but it's harmless.
+`_posted_convergence` in `TelegramBroadcaster.__init__` and `_posted_convergence_signals` in `CopyTradingEngine.__init__` are both initialised as empty `Dict[str, float]`. The two dicts serve parallel dedup roles at different layers (broadcaster dedup vs engine dedup) and are both correctly used.
 
-## Signal aggregation scaling
+### HTML escaping coverage — confirmed correct
 
-The 3-tier multiplier (0.5x / 1.0x / 1.5x) is correctly implemented directly in `_register_signal()` using the three config constants. The previous `enhanced_features.get_signal_multiplier_enhanced()` call is replaced entirely. The `_register_signal()` return value is `(should_execute, unique_count, multiplier)` — unchanged shape, caller code in `_handle_whale_swap()` needs no update.
+All user-supplied strings rendered into HTML messages pass through `_safe_text(html.escape(...))`. Numeric values (win rates, profit pcts, SOL amounts) are formatted via f-string format specs and never contain HTML-special characters. Token mints pass through `re.sub(r'[^1-9A-HJ-NP-Za-km-z]', '', ...)` before use in URLs, which strips any HTML-injectable character.
 
-## Liquidity and age gates
+### Integration hooks in copy_trader.py — confirmed correct
 
-Both gates call DexScreener with an 8-second timeout and fail closed on any error. They share a DexScreener fetch (same endpoint) — a future optimization could combine the two calls, but the current implementation makes two separate HTTP requests per new token. At one copy-trade decision per whale swap, this is fine.
+The whale exit hook fires unconditionally when `outputMint == WSOL_MINT` and the hold-duration filter (`hold_duration_hours <= WHALE_EXIT_MAX_HOLD_DAYS * 24`) is applied before the `asyncio.create_task` call. A zero `hold_duration_hours` (entry record not found) bypasses the filter correctly — the fallback posts the alert without a hold-duration constraint, which is the right conservative behaviour.
 
-The placement is after the token safety filter (step 3) and before signal aggregation (step 4), matching the plan. They are wrapped in the same `if output_mint and output_mint != WSOL_MINT:` block as the safety filter, so WSOL-to-WSOL swaps (no real output token) correctly bypass both.
+The convergence hook in `_register_signal` fires before the `already_executed` early-return, so it is evaluated on every new whale registration regardless of whether the trade was already copied. The engine-level dedup (`_posted_convergence_signals`) prevents a second alert within `CONVERGENCE_DEDUP_HOURS`. The broadcaster has its own separate dedup via `_posted_convergence`, so even if `_register_signal` fires twice in a race condition, the broadcaster will only post once.
 
-`_check_token_age()` returns `False` when `pairCreatedAt` is absent — blocking on unknown age. This is intentionally conservative.
+### get_top_whales_by_pnl — confirmed correct
 
-## Whale exit mirror
+The method handles both backends. The SQLite path uses `datetime('now', '-' || ? || ' days')` which is valid SQLite date arithmetic. The PostgreSQL path uses `INTERVAL '1 day' * %s` which is valid in PostgreSQL. Row access uses the `isinstance(row, dict)` guard that is consistent with how every other dual-path method in this file handles `dict_row` vs `sqlite3.Row`. The inner query for `best_trade_token` is wrapped in a try/except so a failure to find the best token degrades gracefully to an empty string.
 
-The mirror sits at the very top of `_handle_whale_swap()`, before all other gates. When the whale's `outputMint == WSOL_MINT` (selling the token for SOL), it looks up any open position the user holds in that token and cancels the trailing-stop monitor task before calling `_exit_position()`. It then returns regardless of whether a position existed, so the sell-side swap is never re-entered as a copy trade.
+### Config and .env.example — confirmed correct
 
-The `db.get_pending_trade_by_token()` call is the same method used in `_close_existing_position()`, so it's a known-working DB path.
+Seven new keys are present in `config.py` with defaults, and all seven appear in `.env.example` with comments. The `LEADERBOARD_DAY_OF_WEEK` default of `6` matches Python's `weekday()` convention where Monday=0 and Sunday=6.
 
-## `has_whale_sold_token` and monitor-side whale exit
+### Syntax — confirmed clean
 
-The DB method is implemented with parameterized queries, handles both Postgres (`%s`) and SQLite (`?`) backends, and returns `False` on any exception. The query checks `copy_performance` for rows where `exit_reason` is `whale_exit_mirror` or `whale_exit_trigger`. These rows are written by `close_copy_position()` in `_execute_exit_swap()`. The detection gap (bot must have processed the sell first) is described in Issues.
-
-## Trailing stop tightening
-
-`COPY_DEFAULT_TRAILING_STOP` is `0.10` in config, `DEFAULT_TRAILING_STOP` picks it up as a module-level alias, `_monitor_position_trailing()`'s default parameter uses `DEFAULT_TRAILING_STOP`, and `exit_strategy.py`'s disabled-path fallback returns `0.10`. All three values are consistent.
-
-`SMART_TRAILING_STOP_PCT` is also `0.10`; `_monitor_position_graduated()` reads it via `db.get_user_setting(user_id, 'trailing_stop_pct', SMART_TRAILING_STOP_PCT)` so new users get 10% by default while existing users with a persisted setting keep their value.
-
-The user-facing notification in `execute_copy_trade()` still says `-15%` — flagged in Issues.
-
-## Daily loss limit pause
-
-`_passes_runtime_risk_gates()` now creates a `_pause_copy_trading_for()` task when the daily loss limit fires. The guard `user_id not in self._loss_limit_paused` prevents double-pausing. `_pause_copy_trading_for()` uses a `try/finally` to always `discard()` the user from the paused set, so a crash or cancellation during the sleep won't leave the user permanently paused. This is correct resilience.
-
-## Config hygiene
-
-`WHALE_MIN_WIN_RATE` → `0.60`, `WHALE_MIN_TRADES` → `20`, `COPY_DEFAULT_TRAILING_STOP` → `0.10`, `SMART_TRAILING_STOP_PCT` → `0.10`, `DAILY_LOSS_LIMIT_PCT` → `5.0`, `ENABLE_DAILY_LOSS_LIMIT` → `'true'`, `WHALE_MAX_CONSECUTIVE_LOSSES` → `3`. All match the plan. New constants `WHALE_STALE_DAYS`, `COPY_SIGNAL_SCALE_1/2/3_WHALE` are present.
-
-The duplicate `LOG_LEVEL` (×3) and `ENABLE_DAILY_LOSS_LIMIT` (visible twice in the search output) are a pre-existing problem that this PR did not introduce but also did not clean up. The last definition wins in Python, so the correct values are used at runtime — but it's a maintenance hazard.
-
-## Syntax
-
-`py_compile` passes on all six changed files: `telegram_broadcaster.py`, `copy_trader.py`, `smart_trader.py`, `exit_strategy.py`, `config.py`. No coder verification log was present in the task directory; this spot check was run during review.
+All five files pass `python -m py_compile` with no errors.
 
 </details>
 
@@ -111,14 +83,10 @@ The duplicate `LOG_LEVEL` (×3) and `ENABLE_DAILY_LOSS_LIMIT` (visible twice in 
 <details>
 <summary>Changed files</summary>
 
-| File | What changed |
-|---|---|
-| `trading/telegram_broadcaster.py` | Stripped to whale-only: removed all 4 background loops and 27 methods; added `post_whale_trade()` and `_heartbeat_loop()` |
-| `trading/copy_trader.py` | Added liquidity/age gates, whale exit mirror, whale momentum exit, stale whale check, hard-gate on insufficient history, 3-tier signal multiplier, `_pause_copy_trading_for()`, `_check_token_liquidity()`, `_check_token_age()`; `_broadcast_copy_signal()` rewritten to call `post_whale_trade()` |
-| `trading/smart_trader.py` | Removed `broadcast_token_launch()` call from `discover_new_pump_fun_tokens()` |
-| `trading/exit_strategy.py` | `get_dynamic_trailing_stop()` disabled-path default changed from `0.15` to `0.10` |
-| `config.py` | Seven defaults updated; three new signal-scale constants added; `WHALE_STALE_DAYS` added |
-| `.env.example` | Removed broadcast keys documented as `# REMOVED`; added whale qualification, signal scaling, trailing stop, and daily-loss-limit keys |
-| `data/database.py` | Added `has_whale_sold_token()` method |
+- `config.py` — Added 7 new config keys: convergence settings (3), leaderboard settings (3), whale exit max hold days (1)
+- `.env.example` — Added corresponding 7 env var stubs with comments
+- `data/database.py` — Added `get_top_whales_by_pnl(days, limit)` with dual PostgreSQL/SQLite implementation
+- `trading/telegram_broadcaster.py` — Added `post_whale_exit`, `post_convergence_alert`, `post_weekly_leaderboard`, `run_weekly_leaderboard_loop`; started leaderboard loop in `initialize()`; added `_posted_convergence` dict in `__init__`
+- `trading/copy_trader.py` — Added `_posted_convergence_signals` dict in `__init__`; added convergence alert hook in `_register_signal`; added whale exit alert hook in `_handle_whale_swap`; imported new config keys
 
 </details>

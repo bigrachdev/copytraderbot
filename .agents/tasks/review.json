@@ -1,10 +1,16 @@
 {
   "verdict": "APPROVED",
   "findings": [
-    "Duplicate config definitions — LOG_LEVEL is defined 3 times in config.py; ENABLE_DAILY_LOSS_LIMIT appears twice. The last definition wins (correct values), but the file should be deduplicated before the next config change.",
-    "has_whale_sold_token detection gap — the method only detects exits the bot itself recorded via whale_exit_mirror or whale_exit_trigger in copy_performance. If the whale sold during a WS reconnect window the monitor-side check will not fire. This limits the secondary check to a consistency guard, not an independent detection path. Document this limitation.",
-    "Heartbeat posts 🤖 Bot active message to the public Telegram channel every 5 minutes (288 times/day). Consider sending to an admin chat or removing the public post.",
-    "execute_copy_trade() trade confirmation message still hard-codes 'Trailing stop: -15%' — should now read -10%. Display-only inaccuracy, not a logic bug."
+    {
+      "severity": "NON-BLOCKING",
+      "label": "Duplicate import",
+      "detail": "Line 20 of telegram_broadcaster.py imports InlineKeyboardMarkup and InlineKeyboardButton twice in a single from-import statement. Python silently accepts this but it should be cleaned up."
+    },
+    {
+      "severity": "NON-BLOCKING",
+      "label": "Leaderboard loop timing edge case",
+      "detail": "If the process starts within 5 minutes before the fire time on the target day, days_ahead stays 0 and a near-immediate post is attempted. The 6-day cooldown in post_weekly_leaderboard prevents any double-post; worst outcome is a no-op attempt with a log line."
+    }
   ],
   "reviewDoc": "c:\\Users\\user\\Desktop\\copytradebot\\.agents\\tasks\\review.md"
 }
